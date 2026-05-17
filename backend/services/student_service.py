@@ -1,0 +1,399 @@
+# =============================================================
+# services/student_service.py — Student Business Logic
+# =============================================================
+# ALL student-related business logic lives here.
+# Routes call these functions. Routes know nothing about the DB.
+#
+# SERVICE LAYER PRINCIPLES:
+#   1. Contain ALL business rules (not routes, not models)
+#   2. Handle ALL DB transactions (commit, rollback, flush)
+#   3. Raise HTTP exceptions for invalid states
+#   4. Never return raw SQLAlchemy objects when you need to
+#      compose data from multiple tables — build response helpers
+#   5. Be stateless — same input always produces same output
+#
+# REQUEST LIFECYCLE:
+#   HTTP Request
+#     → FastAPI route receives it
+#     → Route calls service function with (db, validated_data)
+#     → Service validates business rules
+#     → Service executes DB operations
+#     → Service returns ORM object (route converts to schema)
+#     → HTTP Response
+# =============================================================
+
+from sqlalchemy.orm import Session, joinedload
+from fastapi import HTTPException, status
+
+from backend.models.user import User, UserRole
+from backend.models.student import Student
+from backend.models.section import Section
+from backend.schemas.student import StudentCreate, StudentUpdate
+from backend.auth.hashing import hash_password
+
+
+# ---------------------------------------------------------------
+# CREATE STUDENT — Transactional Two-Row Creation
+# ---------------------------------------------------------------
+def create_student(db: Session, data: StudentCreate) -> Student:
+    """
+    Creates both a users row AND a students row atomically.
+
+    WHY ATOMIC?
+    → A student profile without a login account is incomplete.
+    → A login account without a profile is a ghost account.
+    → Both must succeed together or neither should exist.
+
+    TRANSACTION FLOW:
+    1. Validate no duplicate roll_number
+    2. Validate section exists (if provided)
+    3. INSERT into users (flush → gets user.id)
+    4. INSERT into students (uses user.id)
+    5. COMMIT → both rows permanent
+    6. ROLLBACK → neither row survives (on any failure)
+
+    FLUSH vs COMMIT:
+    flush()  → SQL sent to DB, stays in active transaction
+               other sessions CANNOT see these rows yet
+               auto-generated id is now available (user.id)
+    commit() → transaction finalized, rows permanently saved
+               all sessions can now see them
+    """
+
+    # --- VALIDATION: Duplicate roll number ---
+    # Roll number is the student's academic identity — must be unique.
+    # Check BEFORE touching the DB for writes.
+    existing_roll = db.query(Student).filter(
+        Student.roll_number == data.roll_number
+    ).first()
+    if existing_roll:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Roll number '{data.roll_number}' is already registered."
+        )
+
+    # --- VALIDATION: Username uniqueness (roll number = username) ---
+    # The roll number becomes the login username.
+    # Check users table independently — belt and suspenders.
+    existing_user = db.query(User).filter(
+        User.username == data.roll_number
+    ).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Username '{data.roll_number}' is already taken."
+        )
+
+    # --- VALIDATION: Section exists (if provided) ---
+    # Never silently accept an invalid section_id.
+    # Fail fast — give clear error to admin.
+    if data.section_id:
+        section = db.query(Section).filter(Section.id == data.section_id).first()
+        if not section:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Section ID {data.section_id} does not exist."
+            )
+        # Validate department matches
+        if section.department != data.department:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Section belongs to '{section.department.value}' department, "
+                    f"but student department is '{data.department.value}'."
+                )
+            )
+
+    try:
+        # --- STEP 1: Create the login account (users row) ---
+        # username = roll_number. This is the student's login ID.
+        # We NEVER expose that internally username == roll_number —
+        # that's a service layer implementation detail.
+        new_user = User(
+            username=data.roll_number,
+            full_name=data.full_name,
+            email=data.email,
+            hashed_password=hash_password(data.password),
+            role=UserRole.student,
+            is_active=True,
+        )
+        db.add(new_user)
+
+        # flush() sends the INSERT to DB within the transaction.
+        # This gives us new_user.id (auto-generated by PostgreSQL)
+        # WITHOUT committing. Crucial — we need this id for the student row.
+        db.flush()
+
+        # --- STEP 2: Create the student profile ---
+        new_student = Student(
+            user_id=new_user.id,           # Links profile to login account
+            roll_number=data.roll_number,
+            department=data.department,
+            semester=data.semester,
+            admission_year=data.admission_year,
+            section_id=data.section_id,
+            date_of_birth=data.date_of_birth,
+            phone=data.phone,
+            address=data.address,
+            guardian_name=data.guardian_name,
+            guardian_phone=data.guardian_phone,
+        )
+        db.add(new_student)
+
+        # commit() finalizes the transaction — BOTH rows are permanent now.
+        # If the system crashes between flush and commit:
+        # PostgreSQL automatically rolls back the uncommitted transaction.
+        db.commit()
+
+        # refresh() reloads the object from DB to get server-set fields:
+        # (created_at, updated_at, and any server_default values)
+        db.refresh(new_student)
+
+        return new_student
+
+    except HTTPException:
+        db.rollback()
+        raise  # Re-raise HTTP errors exactly as-is
+
+    except Exception as e:
+        # Unexpected errors (DB constraints, network, etc.)
+        # ALWAYS rollback on any unexpected exception.
+        # Without rollback: partially flushed data can corrupt the session.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Student creation failed: {str(e)}"
+        )
+
+
+# ---------------------------------------------------------------
+# GET STUDENT BY ID
+# ---------------------------------------------------------------
+def get_student_by_id(db: Session, student_id: int) -> Student:
+    """
+    Fetches a student with their user and section relationships eagerly loaded.
+
+    EAGER LOADING (joinedload) vs LAZY LOADING:
+    → Lazy loading: SQLAlchemy makes EXTRA DB calls when you access
+      student.user or student.section (after the session might be closed).
+      This causes "DetachedInstanceError" in FastAPI — a very common beginner bug.
+
+    → Eager loading (joinedload): SQLAlchemy fetches all related objects
+      in ONE SQL query using JOIN. No extra calls. No session issues.
+
+    Production rule: always joinedload relationships you KNOW you'll access.
+    """
+    student = (
+        db.query(Student)
+        .options(
+            joinedload(Student.user),     # JOIN users table
+            joinedload(Student.section),  # JOIN sections table
+        )
+        .filter(Student.id == student_id)
+        .first()
+    )
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Student with ID {student_id} not found."
+        )
+    return student
+
+
+# ---------------------------------------------------------------
+# GET STUDENT BY ROLL NUMBER
+# ---------------------------------------------------------------
+def get_student_by_roll_number(db: Session, roll_number: str) -> Student:
+    """
+    Fetch by roll number — common use case for admin lookups.
+    roll_number is indexed in the DB so this query is fast.
+    """
+    student = (
+        db.query(Student)
+        .options(joinedload(Student.user), joinedload(Student.section))
+        .filter(Student.roll_number == roll_number.upper())
+        .first()
+    )
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Student with roll number '{roll_number}' not found."
+        )
+    return student
+
+
+# ---------------------------------------------------------------
+# UPDATE STUDENT — Partial (PATCH) Update
+# ---------------------------------------------------------------
+def update_student(db: Session, student_id: int, data: StudentUpdate) -> Student:
+    """
+    Updates only the fields that were explicitly provided.
+
+    model_dump(exclude_unset=True):
+    → Returns only fields the client explicitly sent in the request.
+    → If client sends {"semester": 4}, only semester is updated.
+    → Fields not in the request keep their current DB value.
+    → This is the PATCH (partial update) pattern.
+
+    WHY NOT overwrite all fields?
+    → Full overwrites (PUT) risk nulling out optional fields
+      if client forgets to include them.
+    → PATCH is safer for partial edits.
+    """
+    student = get_student_by_id(db, student_id)
+
+    # Validate section change (if provided)
+    update_data = data.model_dump(exclude_unset=True)
+
+    if "section_id" in update_data and update_data["section_id"] is not None:
+        section = db.query(Section).filter(
+            Section.id == update_data["section_id"]
+        ).first()
+        if not section:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Section ID {update_data['section_id']} does not exist."
+            )
+
+    # Split: some fields go to users table, rest go to students table
+    user_fields = {"full_name", "email"}
+    student_fields = {
+        "semester", "section_id", "phone", "address",
+        "guardian_name", "guardian_phone", "date_of_birth"
+    }
+
+    for field, value in update_data.items():
+        if field in user_fields:
+            setattr(student.user, field, value)   # update users row
+        elif field in student_fields:
+            setattr(student, field, value)          # update students row
+
+    db.commit()
+    db.refresh(student)
+    return student
+
+
+# ---------------------------------------------------------------
+# DEACTIVATE STUDENT — Soft Delete Pattern
+# ---------------------------------------------------------------
+def deactivate_student(db: Session, student_id: int) -> dict:
+    """
+    Soft-deactivates a student — sets is_active=False on their user account.
+
+    WHY SOFT DELETE?
+    → Hard delete destroys historical data (grades, attendance, etc.)
+    → A deactivated student can't log in but all their records survive.
+    → Can be reactivated if needed (e.g., student returns after gap year).
+    → Audit trail preserved — crucial for academic institutions.
+
+    In production ERP systems, records are almost NEVER hard-deleted.
+    The "delete" button always means "deactivate".
+    """
+    student = get_student_by_id(db, student_id)
+
+    if not student.user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Student '{student.roll_number}' is already deactivated."
+        )
+
+    student.user.is_active = False
+    db.commit()
+
+    return {
+        "message": f"Student '{student.roll_number}' has been deactivated.",
+        "student_id": student_id
+    }
+
+
+# ---------------------------------------------------------------
+# GET STUDENTS BY SECTION
+# ---------------------------------------------------------------
+def get_students_by_section(db: Session, section_id: int) -> list[Student]:
+    """
+    Returns all active students in a section.
+    Used by faculty to see their class roster.
+
+    Filters for active students only — deactivated students
+    should not appear in class rosters.
+
+    Why query directly instead of section.students.all()?
+    → Direct query gives us full control over filters and ordering.
+    → section.students with lazy="dynamic" needs an explicit .all()
+      but loses type safety and IDE support.
+    → Explicit queries are always clearer than implicit ORM navigation.
+    """
+    # Verify section exists first
+    section = db.query(Section).filter(Section.id == section_id).first()
+    if not section:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Section ID {section_id} not found."
+        )
+
+    students = (
+        db.query(Student)
+        .join(User, Student.user_id == User.id)
+        .options(joinedload(Student.user))
+        .filter(
+            Student.section_id == section_id,
+            User.is_active == True,
+        )
+        .order_by(Student.roll_number)
+        .all()
+    )
+    return students
+
+
+# ---------------------------------------------------------------
+# GET STUDENT BY USER ID — Used by /students/me
+# ---------------------------------------------------------------
+def get_student_by_user_id(db: Session, user_id: int) -> Student:
+    """
+    Fetches a student's profile using the user_id from their JWT token.
+
+    Flow for GET /students/me:
+      1. JWT decoded by get_current_student dependency → returns User object
+      2. Route calls this function with user.id
+      3. Returns the student profile linked to that user account
+
+    This is how "view my own profile" works without the student
+    needing to know their own student_id (which is an internal DB key).
+    """
+    student = (
+        db.query(Student)
+        .options(joinedload(Student.user), joinedload(Student.section))
+        .filter(Student.user_id == user_id)
+        .first()
+    )
+    if not student:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Student profile not found for this account."
+        )
+    return student
+
+
+# ---------------------------------------------------------------
+# LIST ALL STUDENTS — Admin use
+# ---------------------------------------------------------------
+def list_all_students(db: Session, skip: int = 0, limit: int = 50) -> list[Student]:
+    """
+    Paginated list of all students.
+
+    skip/limit = pagination pattern:
+    → skip=0, limit=50  → first page (rows 1-50)
+    → skip=50, limit=50 → second page (rows 51-100)
+
+    WHY PAGINATION?
+    → A college has thousands of students.
+    → Returning 10,000 rows in one API call = server memory spike + slow response.
+    → Pagination keeps responses fast and predictable.
+    """
+    return (
+        db.query(Student)
+        .options(joinedload(Student.user))
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )

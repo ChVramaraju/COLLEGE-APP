@@ -1,0 +1,22 @@
+# Virtual environment — never commit this
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment secrets — CRITICAL: never commit
+.env
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Alembic
+*.db
+
+# Pytest
+.pytest_cache/
