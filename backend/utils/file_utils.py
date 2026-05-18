@@ -53,6 +53,15 @@ UPLOAD_DIR = Path(__file__).parent.parent / "uploads" / "notes"
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024   # 20 MB
 
 # -----------------------------------------------------------------
+# MINIMUM FILE SIZE — Rejects stub / skeleton files
+# -----------------------------------------------------------------
+# A real PDF is never smaller than 1 KB. Skeleton/stub PDFs produced
+# by corrupted uploads (e.g. middleware truncation) are ~62 bytes.
+# This guard catches those at upload time so they never reach the DB.
+# -----------------------------------------------------------------
+MIN_FILE_SIZE_BYTES = 1024   # 1 KB
+
+# -----------------------------------------------------------------
 # ALLOWED FILE TYPES
 # -----------------------------------------------------------------
 # WHY check BOTH extension AND MIME type?
@@ -70,9 +79,11 @@ MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024   # 20 MB
 # Production systems add magic byte inspection as a 3rd layer.
 # -----------------------------------------------------------------
 ALLOWED_EXTENSIONS = {
-    ".pdf", ".doc", ".docx",
-    ".ppt", ".pptx",
-    ".jpg", ".jpeg", ".png",
+    ".pdf",
+    ".doc",  ".docx",
+    ".ppt",  ".pptx",
+    ".odt",  ".odp",  ".ods",   # ODF open document formats
+    ".jpg",  ".jpeg", ".png",
 }
 
 ALLOWED_MIME_TYPES = {
@@ -81,12 +92,50 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",     # .docx
     "application/vnd.ms-powerpoint",                                               # .ppt
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",   # .pptx
+    "application/vnd.oasis.opendocument.text",                                     # .odt
+    "application/vnd.oasis.opendocument.presentation",                             # .odp
+    "application/vnd.oasis.opendocument.spreadsheet",                              # .ods
     "image/jpeg",
     "image/png",
 }
 
 # Human-readable list for error messages
-ALLOWED_TYPES_DISPLAY = "PDF, DOC, DOCX, PPT, PPTX, JPG, PNG"
+ALLOWED_TYPES_DISPLAY = "PDF, ODT, ODP, ODS, DOC, DOCX, PPT, PPTX, JPG, PNG"
+
+# -----------------------------------------------------------------
+# MIME-EXTENSION COMPATIBILITY TABLE
+# -----------------------------------------------------------------
+# Security layer 2.5: prevents renaming attacks where extension and
+# MIME type belong to completely different file categories.
+#
+# ATTACK THIS STOPS:
+#   Attacker has malicious.docx but renames to lecture.pdf
+#   → ext check PASSES (.pdf is allowed)
+#   → MIME check PASSES (docx MIME is allowed)
+#   → Without this check the mismatched file would be accepted
+#   → With this check: .pdf ext must carry application/pdf MIME
+#
+# ODF NOTE: some clients (older browsers, curl, Python requests) may
+# report ODF files as application/zip because ODF is a ZIP container.
+# Those are included as accepted aliases so uploads are not blocked.
+# -----------------------------------------------------------------
+EXTENSION_MIME_COMPATIBILITY: dict[str, frozenset[str]] = {
+    ".pdf":  frozenset({"application/pdf"}),
+    ".doc":  frozenset({"application/msword"}),
+    ".docx": frozenset({"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}),
+    ".ppt":  frozenset({"application/vnd.ms-powerpoint"}),
+    ".pptx": frozenset({"application/vnd.openxmlformats-officedocument.presentationml.presentation"}),
+    # ODF: canonical MIME OR application/zip (ODF files are ZIP archives)
+    ".odt":  frozenset({"application/vnd.oasis.opendocument.text",
+                        "application/zip", "application/octet-stream"}),
+    ".odp":  frozenset({"application/vnd.oasis.opendocument.presentation",
+                        "application/zip", "application/octet-stream"}),
+    ".ods":  frozenset({"application/vnd.oasis.opendocument.spreadsheet",
+                        "application/zip", "application/octet-stream"}),
+    ".jpg":  frozenset({"image/jpeg", "image/jpg"}),
+    ".jpeg": frozenset({"image/jpeg", "image/jpg"}),
+    ".png":  frozenset({"image/png"}),
+}
 
 
 def ensure_upload_dir() -> None:
@@ -122,19 +171,25 @@ def validate_upload(file: UploadFile, content: bytes) -> None:
             detail="Uploaded file has no filename."
         )
 
-    # --- Check 1: Extension ---
+    # --- Check 1: Extension whitelist ---
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=(
-                f"File type '{ext}' is not allowed. "
+                f"File extension '{ext}' is not allowed. "
                 f"Accepted types: {ALLOWED_TYPES_DISPLAY}"
             )
         )
 
-    # --- Check 2: MIME type ---
-    if file.content_type not in ALLOWED_MIME_TYPES:
+    # --- Check 2: MIME type whitelist ---
+    # For ODF files: accept canonical ODF MIME types OR application/zip
+    # (ODF is a ZIP container; some clients correctly report application/zip)
+    odf_extensions = {".odt", ".odp", ".ods"}
+    odf_zip_mimes  = {"application/zip", "application/octet-stream"}
+    is_odf_zip = (ext in odf_extensions and file.content_type in odf_zip_mimes)
+
+    if not is_odf_zip and file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             detail=(
@@ -142,6 +197,29 @@ def validate_upload(file: UploadFile, content: bytes) -> None:
                 f"Accepted: {ALLOWED_TYPES_DISPLAY}"
             )
         )
+
+    # --- Check 2.5: MIME-extension consistency ---
+    # Rejects mismatches like: extension=.pdf but MIME=application/msword
+    # (i.e. a renamed file from a different format category)
+    # Only applied when the extension has a known mapping; unknown extensions
+    # already failed Check 1 above.
+    # ODF+zip MIME combinations are always accepted (is_odf_zip carve-out above)
+    if not is_odf_zip:
+        allowed_mimes_for_ext = EXTENSION_MIME_COMPATIBILITY.get(ext)
+        if allowed_mimes_for_ext and file.content_type not in allowed_mimes_for_ext:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=(
+                    f"MIME type '{file.content_type}' does not match "
+                    f"file extension '{ext}'. "
+                    f"Please upload an unmodified file without renaming it."
+                )
+            )
+
+    logger.debug(
+        f"[validate_upload] '{file.filename}' ext='{ext}' "
+        f"mime='{file.content_type}' size={len(content):,} bytes — checks OK"
+    )
 
     # --- Check 3: File size ---
     if len(content) > MAX_FILE_SIZE_BYTES:
@@ -151,11 +229,17 @@ def validate_upload(file: UploadFile, content: bytes) -> None:
             detail=f"File size {size_mb:.1f}MB exceeds the 20MB limit."
         )
 
-    # --- Check 4: Empty file ---
-    if len(content) == 0:
+    # --- Check 4: Minimum size (rejects empty + skeleton stub files) ---
+    # Skeleton PDFs produced by middleware truncation are ~62 bytes.
+    # Any real document (PDF, DOCX, PPT, image) is well above 1 KB.
+    if len(content) < MIN_FILE_SIZE_BYTES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty."
+            detail=(
+                f"Uploaded file is too small ({len(content)} bytes). "
+                f"Minimum allowed size is {MIN_FILE_SIZE_BYTES} bytes (1 KB). "
+                f"The file may be empty or a corrupted stub — please re-select the file."
+            ),
         )
 
 

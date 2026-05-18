@@ -28,22 +28,28 @@ from backend.auth.dependencies import (
 )
 from backend.models.user import User, UserRole
 from backend.schemas.test import (
-    TestCreate, TestResponse,
-    BulkQuestionsRequest,
+    TestCreate, TestUpdate, TestResponse,
+    BulkQuestionsRequest, FacultyQuestionResponse,
     ActiveAttemptResponse, QuestionForStudent,
     TestSubmissionRequest, TestResultResponse,
-    StudentResultSummary, TestAnalytics,
+    StudentResultSummary, TestAnalytics, AllResultsItem,
 )
 from backend.services.test_service import (
     create_test,
+    update_test,
+    delete_test,
     add_questions,
+    replace_questions,
     publish_test,
+    unpublish_test,
     get_available_tests,
     start_test_attempt,
     submit_test,
     get_attempt_result,
     get_student_results,
     get_test_analytics,
+    get_test_questions_for_faculty,
+    get_all_results,
     list_faculty_tests,
 )
 
@@ -195,6 +201,43 @@ def my_results_route(
 
 
 # ---------------------------------------------------------------
+# PATCH /tests/{id} — Update draft test metadata (Faculty only)
+# ---------------------------------------------------------------
+@router.patch(
+    "/{test_id}",
+    response_model=TestResponse,
+    summary="Update a draft test's metadata (Faculty only)",
+)
+def update_test_route(
+    test_id: int,
+    data: TestUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    test = update_test(db, current_user.id, test_id, data)
+    return TestResponse(
+        **{c.name: getattr(test, c.name) for c in test.__table__.columns},
+        question_count=len(test.questions),
+    )
+
+
+# ---------------------------------------------------------------
+# DELETE /tests/{id} — Soft-delete a test (Faculty only)
+# ---------------------------------------------------------------
+@router.delete(
+    "/{test_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a test (Faculty only — own tests only)",
+)
+def delete_test_route(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    delete_test(db, current_user.id, test_id)
+
+
+# ---------------------------------------------------------------
 # GET /tests/{id} — Test metadata (all authenticated roles)
 # ---------------------------------------------------------------
 @router.get(
@@ -288,14 +331,74 @@ def get_result_route(
 
 
 # ---------------------------------------------------------------
-# GET /tests/{id}/analytics — Faculty/Admin analytics
+# GET /tests/{id}/questions — Faculty reads own questions (w/ correct_option)
+# MUST be before /{test_id} to avoid route collision
 # ---------------------------------------------------------------
 @router.get(
-    "/{test_id}/analytics",
-    response_model=TestAnalytics,
-    summary="Get full analytics for a test (Admin or Faculty)",
+    "/{test_id}/questions",
+    response_model=list[FacultyQuestionResponse],
+    summary="Get questions with correct answers for a draft test (Faculty only)",
 )
-def get_analytics_route(
+def get_questions_route(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    questions = get_test_questions_for_faculty(db, current_user.id, test_id)
+    return [FacultyQuestionResponse.model_validate(q) for q in questions]
+
+
+# ---------------------------------------------------------------
+# PUT /tests/{id}/questions — Idempotent replace ALL questions
+# ---------------------------------------------------------------
+@router.put(
+    "/{test_id}/questions",
+    status_code=status.HTTP_200_OK,
+    summary="Replace ALL questions for a draft test atomically (Faculty only)",
+)
+def replace_questions_route(
+    test_id: int,
+    data: BulkQuestionsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    questions = replace_questions(db, current_user.id, test_id, data)
+    return {
+        "message": f"{len(questions)} questions saved for test {test_id}.",
+        "question_count": len(questions),
+        "test_id": test_id,
+    }
+
+
+# ---------------------------------------------------------------
+# PATCH /tests/{id}/unpublish — Revert published test to draft
+# ---------------------------------------------------------------
+@router.patch(
+    "/{test_id}/unpublish",
+    response_model=TestResponse,
+    summary="Unpublish a test (only if no attempts exist) (Faculty only)",
+)
+def unpublish_test_route(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    test = unpublish_test(db, current_user.id, test_id)
+    return TestResponse(
+        **{c.name: getattr(test, c.name) for c in test.__table__.columns},
+        question_count=len(test.questions),
+    )
+
+
+# ---------------------------------------------------------------
+# GET /tests/{id}/all-results — All student attempts (Faculty/Admin)
+# ---------------------------------------------------------------
+@router.get(
+    "/{test_id}/all-results",
+    response_model=list[AllResultsItem],
+    summary="Get all student results for a test (Faculty owner or Admin)",
+)
+def get_all_results_route(
     test_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -303,4 +406,51 @@ def get_analytics_route(
     from fastapi import HTTPException
     if current_user.role not in (UserRole.admin, UserRole.faculty):
         raise HTTPException(status_code=403, detail="Admin or Faculty required.")
+    results = get_all_results(db, test_id, current_user.id)
+    return [
+        AllResultsItem(
+            attempt_id=r["attempt_id"],
+            student_id=r["student_id"],
+            roll_number=r["roll_number"],
+            full_name=r["full_name"],
+            score=r["score"],
+            total_marks=r["total_marks"],
+            percentage=r["percentage"],
+            is_submitted=r["is_submitted"],
+            submitted_at=r["submitted_at"],
+        )
+        for r in results
+    ]
+
+
+# ---------------------------------------------------------------
+# GET /tests/{id}/analytics — Faculty/Admin analytics
+# ---------------------------------------------------------------
+@router.get(
+    "/{test_id}/analytics",
+    response_model=TestAnalytics,
+    summary="Get full analytics for a test (Admin or owning Faculty)",
+)
+def get_analytics_route(
+    test_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from fastapi import HTTPException
+    from backend.models.faculty import Faculty as FacultyModel
+    if current_user.role not in (UserRole.admin, UserRole.faculty):
+        raise HTTPException(status_code=403, detail="Admin or Faculty required.")
+    if current_user.role == UserRole.faculty:
+        faculty = db.query(FacultyModel).filter(
+            FacultyModel.user_id == current_user.id
+        ).first()
+        if not faculty:
+            raise HTTPException(status_code=404, detail="Faculty profile not found.")
+        from backend.models.test import Test as TestModel
+        test = db.query(TestModel).filter(TestModel.id == test_id).first()
+        if not test or test.faculty_id != faculty.id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only view analytics for your own tests."
+            )
     return get_test_analytics(db, test_id)

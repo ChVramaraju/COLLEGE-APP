@@ -42,7 +42,10 @@ from backend.auth.dependencies import (
     get_current_user,
 )
 from backend.models.user import User, UserRole
-from backend.schemas.notes import NoteResponse, NoteDetailResponse, NoteUpdate
+from backend.schemas.notes import (
+    NoteResponse, NoteDetailResponse, NoteUpdate,
+    FacultyNoteResponse, NotePublishToggle,
+)
 from backend.services.notes_service import (
     upload_note,
     get_note_by_id,
@@ -50,6 +53,8 @@ from backend.services.notes_service import (
     get_note_file_path,
     update_note,
     deactivate_note,
+    publish_note,
+    replace_note_file,
 )
 
 router = APIRouter(
@@ -75,7 +80,7 @@ router = APIRouter(
 # ---------------------------------------------------------------
 @router.post(
     "/upload",
-    response_model=NoteResponse,
+    response_model=FacultyNoteResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload a note file for a section (Faculty only)",
 )
@@ -84,29 +89,26 @@ async def upload_note_route(
     subject: str = Form(..., min_length=2, max_length=100),
     section_id: int = Form(...),
     description: Optional[str] = Form(None),
+    auto_publish: bool = Form(False),
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_faculty),
 ):
     content = await file.read()   # Read bytes ONCE here, pass to sync service
 
+    from backend.utils.file_utils import MIN_FILE_SIZE_BYTES
     logger.debug(
         f"[upload] filename='{file.filename}' "
         f"content_type='{file.content_type}' "
-        f"bytes_received={len(content):,}"
+        f"bytes_received={len(content):,}  "
+        f"min_required={MIN_FILE_SIZE_BYTES}"
     )
-
-    if len(content) == 0:
-        from fastapi import HTTPException
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file is empty. The request body may have been truncated by middleware.",
-        )
 
     note = upload_note(
         db, current_user.id,
         title, subject, section_id,
-        file, content, description
+        file, content, description,
+        auto_publish=auto_publish,
     )
 
     logger.info(
@@ -163,7 +165,16 @@ def get_note_route(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    from fastapi import HTTPException
     note = get_note_by_id(db, note_id)
+
+    # Students must not see draft note metadata.
+    # Use 404 (not 403) to avoid revealing the draft exists.
+    if current_user.role == UserRole.student and not note.is_published:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Note ID {note_id} not found.",
+        )
 
     # Build NoteDetailResponse with faculty brief
     from backend.schemas.notes import FacultyBriefForNote
@@ -203,11 +214,34 @@ def download_note(
     current_user: User = Depends(get_current_user),
 ):
     import os
+    from fastapi import HTTPException
+
     file_path, original_filename, mime_type = get_note_file_path(
         db, note_id,
         requesting_user_id=current_user.id,
         requesting_user_role=current_user.role.value,
     )
+
+    # ── Physical file integrity check ───────────────────────────
+    # The DB record is authoritative for metadata, but the file
+    # must exist on disk. If it was deleted (orphaned record, disk
+    # cleanup, migration error), return 410 Gone — not 500.
+    # 410 (Gone) signals the frontend that this resource existed
+    # but is permanently unavailable, so it can show a clean error.
+    if not os.path.exists(file_path):
+        logger.warning(
+            f"[download] ORPHANED note_id={note_id} "
+            f"file='{original_filename}' path='{file_path}' NOT FOUND on disk. "
+            f"user_id={current_user.id}"
+        )
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                f"The file for note '{original_filename}' is no longer available on disk. "
+                f"It may have been deleted during a system migration. "
+                f"Please ask your faculty to re-upload the file."
+            ),
+        )
 
     disk_size = os.path.getsize(file_path)
     logger.debug(
@@ -257,6 +291,65 @@ def update_note_route(
         return note
 
     return update_note(db, note_id, current_user.id, data)
+
+
+# ---------------------------------------------------------------
+# PATCH /notes/{note_id}/publish — Publish or unpublish a note
+# ---------------------------------------------------------------
+# Separated from PATCH /notes/{id} (metadata update) intentionally.
+# Publish is a lifecycle action with a side effect (student notification).
+# Keeping it at its own sub-path makes the intent explicit at the HTTP level.
+@router.patch(
+    "/{note_id}/publish",
+    response_model=FacultyNoteResponse,
+    summary="Publish or unpublish a note (uploader Faculty only)",
+)
+def publish_note_route(
+    note_id: int,
+    data: NotePublishToggle,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    return publish_note(db, note_id, current_user.id, data.is_published)
+
+
+# ---------------------------------------------------------------
+# PUT /notes/{note_id}/replace-file — Swap the binary file
+# ---------------------------------------------------------------
+# async def: needed for `await file.read()`
+# PUT (not PATCH) because it fully replaces the file resource.
+# The note record's file metadata is wholly replaced by the new file.
+#
+# CONSTRAINT (enforced in service): note must be UNPUBLISHED.
+# Faculty must: unpublish → replace → republish.
+@router.put(
+    "/{note_id}/replace-file",
+    response_model=FacultyNoteResponse,
+    summary="Replace the uploaded file for an unpublished note (uploader only)",
+)
+async def replace_note_file_route(
+    note_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    content = await file.read()
+
+    logger.debug(
+        f"[replace-file] note_id={note_id} "
+        f"filename='{file.filename}' "
+        f"content_type='{file.content_type}' "
+        f"bytes={len(content):,}"
+    )
+
+    note = replace_note_file(db, note_id, current_user.id, file, content)
+
+    logger.info(
+        f"[replace-file] note_id={note_id} replaced → "
+        f"new file='{file.filename}' size={note.file_size:,} bytes"
+    )
+
+    return note
 
 
 # ---------------------------------------------------------------

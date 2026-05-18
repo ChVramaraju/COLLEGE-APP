@@ -93,3 +93,47 @@ class NoteUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=2, max_length=200)
     description: Optional[str] = None
     subject: Optional[str] = Field(None, min_length=2, max_length=100)
+
+
+# ---------------------------------------------------------------
+# FACULTY NOTE RESPONSE — Extends NoteResponse with management fields
+# ---------------------------------------------------------------
+class FacultyNoteResponse(NoteResponse):
+    """
+    Returned by faculty-only endpoints.
+
+    EXTENDS NoteResponse with:
+      → is_published: whether this note is visible to students.
+                      Not included in student-facing NoteResponse —
+                      students never need to know the draft/publish status.
+      → updated_at:   last metadata or file update timestamp.
+                      Useful for the faculty dashboard "last edited" column.
+
+    WHY extend NoteResponse instead of creating a new model?
+      → DRY: NoteResponse already excludes file_path, file_name.
+        FacultyNoteResponse inherits that safety automatically.
+      → Substitutability: any consumer of NoteResponse can safely
+        receive a FacultyNoteResponse — extra fields are ignored.
+    """
+    is_published: bool = False
+    updated_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------
+# PUBLISH TOGGLE SCHEMA — PATCH /notes/{id}/publish
+# ---------------------------------------------------------------
+class NotePublishToggle(BaseModel):
+    """
+    Payload for toggling publish state.
+
+    WHY a dedicated schema instead of NoteUpdate?
+      → Separation of concerns: publish/unpublish is a LIFECYCLE ACTION,
+        not a metadata edit. It triggers different business logic
+        (e.g. student notification on publish).
+      → Clarity at the API level: PATCH /notes/{id}/publish communicates
+        intent far better than PATCH /notes/{id} with { is_published: true }.
+      → Security: NoteUpdate intentionally cannot change is_published.
+        Keeping them separate prevents accidental privilege escalation where
+        a metadata update accidentally exposes a draft note.
+    """
+    is_published: bool

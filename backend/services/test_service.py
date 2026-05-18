@@ -22,10 +22,11 @@ from backend.models.faculty import Faculty
 from backend.models.section import Section
 from backend.models.user import User
 from backend.schemas.test import (
-    TestCreate, QuestionCreate, BulkQuestionsRequest,
+    TestCreate, TestUpdate, QuestionCreate, BulkQuestionsRequest,
     ActiveAttemptResponse, QuestionForStudent,
     TestSubmissionRequest, TestResultResponse, QuestionWithAnswer,
     StudentResultSummary, TestAnalytics, QuestionAccuracy, TestResponse,
+    FacultyQuestionResponse, AllResultsItem,
 )
 
 PASS_THRESHOLD = 40.0   # 40% is minimum pass mark
@@ -520,6 +521,178 @@ def get_test_analytics(
         topper_score=topper.score if topper else None,
         question_accuracy=question_accuracy,
     )
+
+
+# ---------------------------------------------------------------
+# UPDATE TEST — Modify draft metadata
+# ---------------------------------------------------------------
+def update_test(
+    db: Session,
+    faculty_user_id: int,
+    test_id: int,
+    data: TestUpdate,
+) -> Test:
+    test = _get_test_for_faculty(db, test_id, faculty_user_id)
+    if test.is_published:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot modify a published test. Unpublish first."
+        )
+    if data.title           is not None: test.title            = data.title
+    if data.description     is not None: test.description      = data.description
+    if data.subject         is not None: test.subject          = data.subject
+    if data.duration_minutes is not None: test.duration_minutes = data.duration_minutes
+    if data.start_time      is not None: test.start_time       = data.start_time
+    if data.end_time        is not None: test.end_time         = data.end_time
+    db.commit()
+    db.refresh(test)
+    return test
+
+
+# ---------------------------------------------------------------
+# DELETE TEST — Soft-delete (is_active = False)
+# ---------------------------------------------------------------
+def delete_test(
+    db: Session,
+    faculty_user_id: int,
+    test_id: int,
+) -> None:
+    test = _get_test_for_faculty(db, test_id, faculty_user_id)
+    if test.is_published:
+        attempt_count = db.query(TestAttempt).filter(
+            TestAttempt.test_id == test_id
+        ).count()
+        if attempt_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot delete: {attempt_count} student attempt(s) exist. "
+                    "Unpublish first and ensure no active attempts."
+                )
+            )
+    test.is_active = False
+    db.commit()
+
+
+# ---------------------------------------------------------------
+# GET QUESTIONS FOR FACULTY — Includes correct_option
+# ---------------------------------------------------------------
+def get_test_questions_for_faculty(
+    db: Session,
+    faculty_user_id: int,
+    test_id: int,
+) -> list[Question]:
+    test = _get_test_for_faculty(db, test_id, faculty_user_id)
+    return test.questions
+
+
+# ---------------------------------------------------------------
+# REPLACE QUESTIONS — Atomic replace of all questions on a draft
+# ---------------------------------------------------------------
+def replace_questions(
+    db: Session,
+    faculty_user_id: int,
+    test_id: int,
+    data: BulkQuestionsRequest,
+) -> list[Question]:
+    """
+    Completely replaces all questions for a draft test.
+    Unlike add_questions (which appends), this starts fresh.
+    Ensures order_numbers are clean and sequential.
+    """
+    test = _get_test_for_faculty(db, test_id, faculty_user_id)
+    if test.is_published:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot modify questions on a published test. Unpublish first."
+        )
+    db.query(Question).filter(Question.test_id == test_id).delete(
+        synchronize_session="fetch"
+    )
+    questions = [
+        Question(
+            test_id=test_id,
+            question_text=q.question_text,
+            option_a=q.option_a,
+            option_b=q.option_b,
+            option_c=q.option_c,
+            option_d=q.option_d,
+            correct_option=q.correct_option,
+            marks=q.marks,
+            order_number=i,
+        )
+        for i, q in enumerate(data.questions, start=1)
+    ]
+    db.bulk_save_objects(questions)
+    db.commit()
+    return (
+        db.query(Question)
+        .filter(Question.test_id == test_id)
+        .order_by(Question.order_number)
+        .all()
+    )
+
+
+# ---------------------------------------------------------------
+# UNPUBLISH TEST — Revert to draft (only if no attempts)
+# ---------------------------------------------------------------
+def unpublish_test(
+    db: Session,
+    faculty_user_id: int,
+    test_id: int,
+) -> Test:
+    test = _get_test_for_faculty(db, test_id, faculty_user_id)
+    if not test.is_published:
+        raise HTTPException(status_code=400, detail="Test is not published.")
+    attempt_count = db.query(TestAttempt).filter(
+        TestAttempt.test_id == test_id
+    ).count()
+    if attempt_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot unpublish: {attempt_count} student(s) have already attempted "
+                "this test. Their data would be lost."
+            )
+        )
+    test.is_published = False
+    db.commit()
+    db.refresh(test)
+    return test
+
+
+# ---------------------------------------------------------------
+# GET ALL RESULTS — All student attempts for a test (faculty view)
+# ---------------------------------------------------------------
+def get_all_results(
+    db: Session,
+    test_id: int,
+    faculty_user_id: int,
+) -> list[dict]:
+    _get_test_for_faculty(db, test_id, faculty_user_id)  # ownership check
+    attempts = (
+        db.query(TestAttempt)
+        .options(
+            joinedload(TestAttempt.student).joinedload(Student.user)
+        )
+        .filter(TestAttempt.test_id == test_id)
+        .order_by(TestAttempt.is_submitted.desc(), TestAttempt.started_at.desc())
+        .all()
+    )
+    return [
+        {
+            "attempt_id":  a.id,
+            "student_id":  a.student_id,
+            "roll_number": a.student.roll_number if a.student else "Unknown",
+            "full_name":   a.student.user.full_name if (a.student and a.student.user) else None,
+            "score":       a.score,
+            "total_marks": a.total_marks,
+            "percentage":  a.percentage,
+            "is_submitted": a.is_submitted,
+            "submitted_at": a.submitted_at,
+        }
+        for a in attempts
+    ]
 
 
 # ---------------------------------------------------------------

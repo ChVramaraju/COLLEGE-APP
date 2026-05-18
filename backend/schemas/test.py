@@ -14,7 +14,7 @@
 # =============================================================
 
 from __future__ import annotations
-from pydantic import BaseModel, Field, field_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -35,6 +35,14 @@ class QuestionCreate(BaseModel):
     correct_option: CorrectOption
     marks: int = Field(default=1, ge=1, le=10)
     order_number: int = Field(default=1, ge=1)
+
+    @field_validator("correct_option", mode="before")
+    @classmethod
+    def normalize_correct_option(cls, v: object) -> object:
+        """Accept uppercase 'A'-'D' from frontend; normalise to lowercase for DB."""
+        if isinstance(v, str):
+            return v.lower()
+        return v
 
 
 class QuestionForStudent(BaseModel):
@@ -114,6 +122,30 @@ class TestResponse(BaseModel):
     is_published: bool
     is_active: bool
     question_count: int = 0     # computed in route
+    created_at: Optional[datetime] = None
+
+
+class TestUpdate(BaseModel):
+    """Partial update for a DRAFT test — all fields optional."""
+    title: Optional[str] = Field(None, min_length=3, max_length=200)
+    description: Optional[str] = None
+    subject: Optional[str] = Field(None, min_length=2, max_length=100)
+    duration_minutes: Optional[int] = Field(None, ge=5, le=300)
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def end_after_start(self) -> "TestUpdate":
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time.")
+        return self
+
+    @field_validator("subject", mode="before")
+    @classmethod
+    def normalize_subject(cls, v: object) -> object:
+        if v and isinstance(v, str):
+            return v.strip().title()
+        return v
 
 
 class BulkQuestionsRequest(BaseModel):
@@ -129,6 +161,14 @@ class AnswerSubmission(BaseModel):
     """One student answer for one question."""
     question_id: int
     selected_option: Optional[CorrectOption] = None  # None = skipped
+
+    @field_validator("selected_option", mode="before")
+    @classmethod
+    def normalize_selected_option(cls, v: object) -> object:
+        """Accept uppercase 'A'-'D' from frontend; normalise to lowercase for DB."""
+        if v is not None and isinstance(v, str):
+            return v.lower()
+        return v
 
 
 class TestSubmissionRequest(BaseModel):
@@ -187,6 +227,33 @@ class StudentResultSummary(BaseModel):
 # ---------------------------------------------------------------
 # ANALYTICS SCHEMAS
 # ---------------------------------------------------------------
+
+class FacultyQuestionResponse(BaseModel):
+    """Question WITH correct_option — returned only to the owning faculty."""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    question_text: str
+    option_a: str
+    option_b: str
+    option_c: str
+    option_d: str
+    correct_option: CorrectOption
+    marks: int
+    order_number: int
+
+
+class AllResultsItem(BaseModel):
+    """One row in the all-results list for a test — faculty/admin view."""
+    attempt_id: int
+    student_id: int
+    roll_number: str
+    full_name: Optional[str] = None
+    score: Optional[int] = None
+    total_marks: int
+    percentage: Optional[float] = None
+    is_submitted: bool
+    submitted_at: Optional[datetime] = None
+
 
 class QuestionAccuracy(BaseModel):
     question_id: int

@@ -28,7 +28,7 @@ import time
 import uuid
 import logging
 
-from starlette.datastructures import MutableHeaders, State
+from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger("smart_college")
@@ -85,10 +85,12 @@ class RequestLoggingMiddleware:
         request_id = str(uuid.uuid4())[:8]
 
         # Attach to scope state so route handlers and exception handlers can
-        # access via `request.state.request_id` — same as before.
-        if "state" not in scope:
-            scope["state"] = State()
-        scope["state"].request_id = request_id  # type: ignore[attr-defined]
+        # access via `request.state["request_id"]`.
+        # In pure ASGI, scope["state"] is a plain dict (not a State object).
+        # setdefault is safe: it only writes if the key is absent, preserving
+        # any dict already placed by an outer middleware or Starlette's Router.
+        scope.setdefault("state", {})
+        scope["state"]["request_id"] = request_id
 
         start_time  = time.perf_counter()
         client_info = scope.get("client")

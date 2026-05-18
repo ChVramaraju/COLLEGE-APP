@@ -47,6 +47,7 @@ def upload_note(
     file: UploadFile,
     content: bytes,
     description: Optional[str] = None,
+    auto_publish: bool = False,
 ) -> Note:
     """
     Saves a note file and its metadata atomically.
@@ -112,33 +113,38 @@ def upload_note(
             file_path=file_path,
             file_size=len(content),
             mime_type=file.content_type,
+            is_published=auto_publish,
         )
         db.add(note)
         db.commit()
         db.refresh(note)
 
         # FIRE-AND-FORGET: Notify all students in the section
-        try:
-            from backend.services.notification_service import create_system_notification
-            from backend.models.enums import NotificationType
-            students_in_section = (
-                db.query(Student)
-                .join(User, Student.user_id == User.id)
-                .filter(Student.section_id == section_id, User.is_active == True)
-                .all()
-            )
-            for stu in students_in_section:
-                create_system_notification(
-                    db,
-                    recipient_user_id=stu.user_id,
-                    title=f"New Notes: {title}",
-                    message=f"{subject} notes uploaded by faculty: '{title}'",
-                    notification_type=NotificationType.notes_uploaded,
-                    section_id=section_id,
+        # Only when auto_publish=True — draft uploads must not notify
+        # students about a note they cannot yet see.
+        # Notification on explicit publish is handled by publish_note().
+        if auto_publish:
+            try:
+                from backend.services.notification_service import create_system_notification
+                from backend.models.enums import NotificationType
+                students_in_section = (
+                    db.query(Student)
+                    .join(User, Student.user_id == User.id)
+                    .filter(Student.section_id == section_id, User.is_active == True)
+                    .all()
                 )
-            db.commit()
-        except Exception:
-            pass   # Never block note upload for notification failure
+                for stu in students_in_section:
+                    create_system_notification(
+                        db,
+                        recipient_user_id=stu.user_id,
+                        title=f"New Notes: {title}",
+                        message=f"{subject} notes uploaded by faculty: '{title}'",
+                        notification_type=NotificationType.notes_uploaded,
+                        section_id=section_id,
+                    )
+                db.commit()
+            except Exception:
+                pass   # Never block note upload for notification failure
 
         return note
 
@@ -200,6 +206,7 @@ def list_notes_by_section(
     query = db.query(Note).filter(
         Note.section_id == section_id,
         Note.is_active == True,
+        Note.is_published == True,   # students only see published notes
     )
 
     if subject:
@@ -254,6 +261,7 @@ def get_note_file_path(
         )
 
     # --- Student: can only download notes for their own section ---
+    # --- and cannot download unpublished (draft) notes -------------
     if requesting_user_role == "student":
         student = (
             db.query(Student)
@@ -265,6 +273,15 @@ def get_note_file_path(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You can only download notes for your own section."
             )
+        # BUG FIX: Draft notes must not be downloadable by students.
+        # A student who knows a note_id (e.g. from a previous URL) could
+        # directly fetch a draft. Return 404 (not 403) to avoid revealing
+        # the note exists in draft state.
+        if not note.is_published:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Note ID {note_id} not found."
+            )
 
     # --- Path traversal guard ---
     if not is_safe_path(note.file_path):
@@ -273,12 +290,9 @@ def get_note_file_path(
             detail="File path is invalid. Contact administrator."
         )
 
-    import os
-    if not os.path.exists(note.file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found on server. It may have been moved or deleted."
-        )
+    # NOTE: Physical file existence is NOT checked here.
+    # The download route owns that check and correctly returns 410 (Gone)
+    # vs 404 (Not Found). Checking here would preempt that 410 with a 404.
 
     return note.file_path, note.original_file_name, note.mime_type
 
@@ -298,9 +312,12 @@ def update_note(
     """
     note = get_note_by_id(db, note_id)
 
-    # Ownership check: only the uploader or admin can update
+    # Ownership check: only the uploader can update.
+    # BUG FIX: was `if faculty and ...` which SKIPPED the check when
+    # faculty profile was not found (faculty=None). Changed to
+    # `if not faculty or ...` so a missing profile is a rejection.
     faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
-    if faculty and note.faculty_id != faculty.id:
+    if not faculty or note.faculty_id != faculty.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only update notes you uploaded."
@@ -341,8 +358,9 @@ def deactivate_note(
     """
     note = get_note_by_id(db, note_id)
 
+    # BUG FIX: same ownership check fix as update_note (was `if faculty and ...`)
     faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
-    if faculty and note.faculty_id != faculty.id:
+    if not faculty or note.faculty_id != faculty.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only delete notes you uploaded."
@@ -356,3 +374,199 @@ def deactivate_note(
     delete_upload(file_path)
 
     return {"message": f"Note '{note.title}' has been deleted.", "note_id": note_id}
+
+
+# ---------------------------------------------------------------
+# LIST FACULTY'S OWN NOTES — Management view (includes drafts)
+# ---------------------------------------------------------------
+def list_faculty_notes(
+    db: Session,
+    faculty_user_id: int,
+    search: Optional[str] = None,
+    subject: Optional[str] = None,
+    is_published: Optional[bool] = None,
+    skip: int = 0,
+    limit: int = 200,
+) -> list[Note]:
+    """
+    Returns all notes uploaded by this faculty member, including drafts.
+
+    KEY DIFFERENCE from list_notes_by_section():
+      → No is_published=True filter. Faculty must see ALL their notes
+        (published + drafts) to manage them effectively.
+      → Scoped to this faculty's uploads only, not the whole section.
+        Faculty A cannot see Faculty B's drafts.
+      → is_published param is optional: None = all, True/False = filtered.
+    """
+    faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
+    if not faculty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Faculty profile not found."
+        )
+
+    query = db.query(Note).filter(
+        Note.faculty_id == faculty.id,
+        Note.is_active == True,
+    )
+
+    if is_published is not None:
+        query = query.filter(Note.is_published == is_published)
+
+    if subject:
+        query = query.filter(Note.subject == subject.strip().title())
+
+    if search:
+        query = query.filter(Note.title.ilike(f"%{search.strip()}%"))
+
+    return (
+        query
+        .order_by(Note.uploaded_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+# ---------------------------------------------------------------
+# PUBLISH / UNPUBLISH NOTE
+# ---------------------------------------------------------------
+def publish_note(
+    db: Session,
+    note_id: int,
+    faculty_user_id: int,
+    is_published: bool,
+) -> Note:
+    """
+    Sets the is_published flag on a note.
+
+    OWNERSHIP: only the uploader can publish/unpublish their own notes.
+
+    SIDE EFFECT on publish (is_published=True):
+      → Notifies all students in the section — fire-and-forget.
+      → Never blocks the publish action if notification fails.
+
+    SIDE EFFECT on unpublish (is_published=False):
+      → No notification needed — students simply lose access silently.
+    """
+    note = get_note_by_id(db, note_id)
+
+    faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
+    if not faculty or note.faculty_id != faculty.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only publish or unpublish notes you uploaded."
+        )
+
+    note.is_published = is_published
+    db.commit()
+    db.refresh(note)
+
+    # Notify students when publishing (not unpublishing)
+    if is_published:
+        try:
+            from backend.services.notification_service import create_system_notification
+            from backend.models.enums import NotificationType
+            students_in_section = (
+                db.query(Student)
+                .join(User, Student.user_id == User.id)
+                .filter(Student.section_id == note.section_id, User.is_active == True)
+                .all()
+            )
+            for stu in students_in_section:
+                create_system_notification(
+                    db,
+                    recipient_user_id=stu.user_id,
+                    title=f"New Notes: {note.title}",
+                    message=f"{note.subject} notes are now available: '{note.title}'",
+                    notification_type=NotificationType.notes_uploaded,
+                    section_id=note.section_id,
+                )
+            db.commit()
+        except Exception:
+            pass   # Never block the publish action for notification failure
+
+    return note
+
+
+# ---------------------------------------------------------------
+# REPLACE NOTE FILE — Swap the binary file, keep all metadata
+# ---------------------------------------------------------------
+def replace_note_file(
+    db: Session,
+    note_id: int,
+    faculty_user_id: int,
+    file: UploadFile,
+    content: bytes,
+) -> Note:
+    """
+    Replaces the uploaded file for a note while preserving all metadata.
+
+    CONSTRAINT: Can only replace files on UNPUBLISHED notes.
+    WHY? Students may have already downloaded the published file.
+    Silently swapping it would cause confusion ("where did my download go?").
+    Faculty must unpublish → replace → republish. This makes the action
+    explicit and auditable.
+
+    TRANSACTION SAFETY:
+      1. Validate new file (fail fast, no disk writes yet)
+      2. Save new file to disk
+      3. Update DB record
+      4. On DB failure → delete new file (compensating action)
+      5. On DB success → delete old file (cleanup after commit)
+
+    WHY delete old file AFTER commit?
+      If we deleted old first and DB update fails, the file is gone forever.
+      Deleting after commit means the DB record and disk are always consistent:
+      if commit failed, old file still exists and DB still points to it.
+    """
+    note = get_note_by_id(db, note_id)
+
+    # Ownership check
+    faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
+    if not faculty or note.faculty_id != faculty.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only replace files for notes you uploaded."
+        )
+
+    # Published notes cannot have their file replaced
+    if note.is_published:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Cannot replace the file of a published note. "
+                "Unpublish the note first, replace the file, then republish."
+            )
+        )
+
+    # Validate new file (fail fast before any disk writes)
+    validate_upload(file, content)
+
+    # Save new file to disk
+    new_filename, new_file_path = save_upload(file, content)
+
+    # Update DB record — capture old path for cleanup
+    old_file_path = note.file_path
+    try:
+        note.file_name          = new_filename
+        note.file_path          = new_file_path
+        note.file_size          = len(content)
+        note.mime_type          = file.content_type
+        note.original_file_name = file.filename
+        db.commit()
+        db.refresh(note)
+
+        # Delete the old file ONLY after a successful commit
+        delete_upload(old_file_path)
+
+        return note
+
+    except Exception as e:
+        # Compensating action: delete the newly saved file
+        delete_upload(new_file_path)
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"File replacement failed: {str(e)}"
+        )

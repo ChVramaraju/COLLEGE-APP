@@ -39,6 +39,12 @@ import AdminDashboardPage    from '@/pages/admin/DashboardPage';
 import NotFoundPage          from '@/pages/common/NotFoundPage';
 import AttendancePage        from '@/pages/student/AttendancePage';
 import NotesPage             from '@/pages/student/NotesPage';
+import TestsPage             from '@/pages/student/TestsPage';
+import TestExamPage          from '@/pages/student/TestExamPage';
+import TestResultPage        from '@/pages/student/TestResultPage';
+import FacultyTestsPage      from '@/pages/faculty/FacultyTestsPage';
+import CreateTestPage        from '@/pages/faculty/CreateTestPage';
+import TestAnalyticsPage     from '@/pages/faculty/TestAnalyticsPage';
 
 const router = createBrowserRouter([
   // Root: redirect to login
@@ -68,7 +74,9 @@ const router = createBrowserRouter([
           { path: 'dashboard',  element: <StudentDashboardPage /> },
           { path: 'attendance', element: <AttendancePage /> },
           { path: 'notes',      element: <NotesPage /> },
-          // { path: 'tests',      element: <StudentTestsPage /> },
+          { path: 'tests',                    element: <TestsPage /> },
+          { path: 'tests/:testId/exam',    element: <TestExamPage /> },
+          { path: 'tests/:testId/result',  element: <TestResultPage /> },
           // { path: 'results',    element: <StudentResultsPage /> },
           // { path: 'placement',  element: <StudentPlacementPage /> },
         ],
@@ -86,10 +94,13 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="dashboard" replace /> },
           { path: 'dashboard',  element: <FacultyDashboardPage /> },
+          { path: 'tests',                              element: <FacultyTestsPage /> },
+          { path: 'tests/create',                       element: <CreateTestPage /> },
+          { path: 'tests/:testId/edit',                 element: <CreateTestPage /> },
+          { path: 'tests/:testId/analytics',            element: <TestAnalyticsPage /> },
           // { path: 'sections',   element: <FacultySectionsPage /> },
           // { path: 'attendance', element: <FacultyAttendancePage /> },
           // { path: 'notes',      element: <FacultyNotesPage /> },
-          // { path: 'tests',      element: <FacultyTestsPage /> },
           // { path: 'results',    element: <FacultyResultsPage /> },
         ],
       },

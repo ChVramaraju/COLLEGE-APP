@@ -100,6 +100,25 @@ class Note(Base):
     mime_type = Column(String(100), nullable=False)
 
     # -----------------------------------------------------------------
+    # PUBLISH STATE
+    # -----------------------------------------------------------------
+    # is_published=False → draft: only the uploader can see it.
+    # is_published=True  → live: students in the section can see it.
+    #
+    # DEFAULT STRATEGY:
+    #   server_default='true'  → existing rows in the DB become published
+    #                            when the migration runs (backward compat).
+    #   default=False          → new Python-created Note objects start as
+    #                            drafts unless auto_publish=True is passed.
+    #
+    # WHY separate from is_active?
+    #   is_active = soft-delete flag (governs DB existence)
+    #   is_published = visibility flag (governs student access)
+    #   A note can be: active+unpublished (draft), active+published (live),
+    #   inactive+unpublished (deleted draft). These are independent axes.
+    is_published = Column(Boolean, default=False, nullable=False, server_default="true")
+
+    # -----------------------------------------------------------------
     # SOFT DELETE
     # -----------------------------------------------------------------
     is_active = Column(Boolean, default=True, nullable=False)

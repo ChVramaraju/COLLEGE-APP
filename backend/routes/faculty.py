@@ -6,13 +6,14 @@
 # IMPORTANT ORDERING RULE (same as student.py):
 #   GET /faculty/me          ← MUST be before /{faculty_id}
 #   GET /faculty/me/sections ← MUST be before /{faculty_id}
+#   GET /faculty/notes       ← MUST be before /{faculty_id}
 #   GET /faculty/            ← list (admin)
 #   GET /faculty/{faculty_id} ← by ID (admin)
 # =============================================================
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from backend.database.connection import get_db
 from backend.auth.dependencies import (
@@ -29,6 +30,8 @@ from backend.schemas.faculty import (
     SectionBriefForFaculty,
 )
 from backend.schemas.section import SectionResponse
+from backend.schemas.notes import FacultyNoteResponse
+from backend.services.notes_service import list_faculty_notes
 from backend.services.faculty_service import (
     create_faculty,
     get_faculty_by_id,
@@ -108,6 +111,46 @@ def get_my_sections(
 ):
     faculty = get_faculty_by_user_id(db, current_user.id)
     return get_assigned_sections(db, faculty.id)
+
+
+# ---------------------------------------------------------------
+# GET /faculty/notes — Faculty views their own notes (includes drafts)
+# ---------------------------------------------------------------
+# MUST be declared before GET /faculty/{faculty_id} so the path
+# literal "/notes" is not mistakenly matched as a faculty_id integer.
+# (FastAPI's integer type coercion would reject "notes" anyway, but
+# explicit ordering prevents future bugs if the type is ever relaxed.)
+#
+# WHY on /faculty/notes and not /notes/my-notes?
+#   → The resource is logically "a faculty member's notes collection".
+#     REST principle: /faculty/{me}/notes is the canonical shape.
+#     We use the /me convention (same as /faculty/me/sections)
+#     to avoid the user knowing or providing their own ID.
+#   → Keeping all faculty-scoped views under /faculty/* makes the
+#     role boundary obvious at the URL level.
+@router.get(
+    "/notes",
+    response_model=List[FacultyNoteResponse],
+    summary="List all notes uploaded by the logged-in faculty (includes drafts)",
+)
+def get_my_notes(
+    search:       Optional[str]  = Query(None, description="Search in title"),
+    subject:      Optional[str]  = Query(None, description="Filter by subject name"),
+    is_published: Optional[bool] = Query(None, description="true=published, false=drafts, omit=all"),
+    skip:         int            = Query(0,   ge=0),
+    limit:        int            = Query(200, ge=1, le=200),
+    db:           Session        = Depends(get_db),
+    current_user: User           = Depends(get_current_faculty),
+):
+    return list_faculty_notes(
+        db,
+        faculty_user_id=current_user.id,
+        search=search,
+        subject=subject,
+        is_published=is_published,
+        skip=skip,
+        limit=limit,
+    )
 
 
 # ---------------------------------------------------------------

@@ -84,6 +84,13 @@ const MIME_MAP: Record<string, MimeConfig> = {
                               { group: 'document', label: 'PPT',   iconBg: 'bg-amber-50',   iconColor: 'text-amber-600',   canPreview: false },
   'application/vnd.openxmlformats-officedocument.presentationml.presentation':
                               { group: 'document', label: 'PPT',   iconBg: 'bg-amber-50',   iconColor: 'text-amber-600',   canPreview: false },
+  // ODF (OpenDocument Format) — browser cannot render inline; download only
+  'application/vnd.oasis.opendocument.text':
+                              { group: 'document', label: 'ODT',   iconBg: 'bg-teal-50',    iconColor: 'text-teal-600',    canPreview: false },
+  'application/vnd.oasis.opendocument.presentation':
+                              { group: 'document', label: 'ODP',   iconBg: 'bg-orange-50',  iconColor: 'text-orange-600',  canPreview: false },
+  'application/vnd.oasis.opendocument.spreadsheet':
+                              { group: 'document', label: 'ODS',   iconBg: 'bg-emerald-50', iconColor: 'text-emerald-700', canPreview: false },
   'application/zip':          { group: 'other',    label: 'ZIP',   iconBg: 'bg-gray-50',    iconColor: 'text-gray-500',    canPreview: false },
 };
 
