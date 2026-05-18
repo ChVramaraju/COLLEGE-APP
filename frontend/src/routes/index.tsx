@@ -38,6 +38,7 @@ import FacultyDashboardPage  from '@/pages/faculty/DashboardPage';
 import AdminDashboardPage    from '@/pages/admin/DashboardPage';
 import NotFoundPage          from '@/pages/common/NotFoundPage';
 import AttendancePage        from '@/pages/student/AttendancePage';
+import NotesPage             from '@/pages/student/NotesPage';
 
 const router = createBrowserRouter([
   // Root: redirect to login
@@ -66,7 +67,7 @@ const router = createBrowserRouter([
           { index: true, element: <Navigate to="dashboard" replace /> },
           { path: 'dashboard',  element: <StudentDashboardPage /> },
           { path: 'attendance', element: <AttendancePage /> },
-          // { path: 'notes',      element: <StudentNotesPage /> },
+          { path: 'notes',      element: <NotesPage /> },
           // { path: 'tests',      element: <StudentTestsPage /> },
           // { path: 'results',    element: <StudentResultsPage /> },
           // { path: 'placement',  element: <StudentPlacementPage /> },

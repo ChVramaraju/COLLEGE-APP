@@ -20,8 +20,11 @@
 
 import uuid
 import os
+import logging
 from pathlib import Path
 from fastapi import UploadFile, HTTPException, status
+
+logger = logging.getLogger("smart_college")
 
 # -----------------------------------------------------------------
 # UPLOAD DIRECTORY — Where all note files are physically stored
@@ -176,6 +179,12 @@ def save_upload(file: UploadFile, content: bytes) -> tuple[str, str]:
     → FileResponse needs the full path to serve the file
     → No path reconstruction needed at serve time
     → Changing upload dir only requires updating this function
+
+    POST-WRITE VERIFICATION:
+    After writing, os.path.getsize() is compared against len(content).
+    If they differ (disk full, I/O error, filesystem limitation), the
+    partial file is deleted and a 500 is raised immediately rather than
+    silently storing a corrupt file in the DB.
     """
     ensure_upload_dir()
 
@@ -183,8 +192,35 @@ def save_upload(file: UploadFile, content: bytes) -> tuple[str, str]:
     stored_filename = f"{uuid.uuid4()}{ext}"
     file_path = str(UPLOAD_DIR.resolve() / stored_filename)
 
+    bytes_to_write = len(content)
+    logger.debug(
+        f"[save_upload] writing '{file.filename}' "
+        f"({bytes_to_write:,} bytes) → {stored_filename}"
+    )
+
     with open(file_path, "wb") as f:
         f.write(content)
+
+    # POST-WRITE INTEGRITY VERIFICATION
+    # Confirms the OS actually persisted every byte.
+    # Catches: disk-full mid-write, I/O errors, filesystem quota violations.
+    saved_size = os.path.getsize(file_path)
+    if saved_size != bytes_to_write:
+        os.remove(file_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"File write integrity check failed: "
+                f"received {bytes_to_write:,} bytes, "
+                f"but only {saved_size:,} bytes were written to disk. "
+                f"Please try uploading again."
+            ),
+        )
+
+    logger.info(
+        f"[save_upload] '{file.filename}' saved as '{stored_filename}' "
+        f"({saved_size:,} bytes) ✓ integrity verified"
+    )
 
     return stored_filename, file_path
 

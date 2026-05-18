@@ -26,10 +26,14 @@
 #   All other routes are sync (`def`) — consistent with rest of codebase.
 # =============================================================
 
+import logging
+
 from fastapi import APIRouter, Depends, Form, File, UploadFile, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Optional
+
+logger = logging.getLogger("smart_college")
 
 from backend.database.connection import get_db
 from backend.auth.dependencies import (
@@ -85,11 +89,33 @@ async def upload_note_route(
     current_user: User = Depends(get_current_faculty),
 ):
     content = await file.read()   # Read bytes ONCE here, pass to sync service
-    return upload_note(
+
+    logger.debug(
+        f"[upload] filename='{file.filename}' "
+        f"content_type='{file.content_type}' "
+        f"bytes_received={len(content):,}"
+    )
+
+    if len(content) == 0:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Uploaded file is empty. The request body may have been truncated by middleware.",
+        )
+
+    note = upload_note(
         db, current_user.id,
         title, subject, section_id,
         file, content, description
     )
+
+    logger.info(
+        f"[upload] '{file.filename}' → note_id={note.id} "
+        f"stored_size={note.file_size:,} bytes "
+        f"match={note.file_size == len(content)}"
+    )
+
+    return note
 
 
 # ---------------------------------------------------------------
@@ -176,15 +202,27 @@ def download_note(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    import os
     file_path, original_filename, mime_type = get_note_file_path(
         db, note_id,
         requesting_user_id=current_user.id,
         requesting_user_role=current_user.role.value,
     )
+
+    disk_size = os.path.getsize(file_path)
+    logger.debug(
+        f"[download] note_id={note_id} file='{original_filename}' "
+        f"mime='{mime_type}' disk_size={disk_size:,} bytes "
+        f"user_id={current_user.id}"
+    )
+
     return FileResponse(
         path=file_path,
         filename=original_filename,    # Browser "Save As" name
         media_type=mime_type,
+        # Content-Length is set automatically by FileResponse from disk_size.
+        # Content-Disposition is set to: attachment; filename="original_filename"
+        # Both headers are verified in the frontend fetch() response.
     )
 
 

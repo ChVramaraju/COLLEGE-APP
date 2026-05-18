@@ -91,7 +91,7 @@ apiClient.interceptors.request.use(
 // ---------------------------------------------------------------
 apiClient.interceptors.response.use(
   (response) => response,
-  (error: AxiosError<ApiError>) => {
+  async (error: AxiosError<ApiError>) => {
     if (error.response?.status === 401) {
       localStorage.removeItem(STORAGE_KEYS.TOKEN);
       localStorage.removeItem(STORAGE_KEYS.USER);
@@ -99,15 +99,30 @@ apiClient.interceptors.response.use(
       return Promise.reject(error);
     }
 
-    // Extract FastAPI's detail message for clean error display
-    const detail = error.response?.data?.detail;
+    // BLOB ERROR RESPONSES
+    // When a request uses responseType:'blob' and the server returns
+    // a 4xx/5xx, error.response.data is a Blob — not parsed JSON.
+    // Calling .detail on a Blob returns undefined.
+    // Fix: read the Blob as text, then parse it as JSON.
+    const data = error.response?.data;
+    if (data instanceof Blob) {
+      try {
+        const text   = await data.text();
+        const parsed = JSON.parse(text) as { detail?: unknown };
+        const detail = typeof parsed.detail === 'string' ? parsed.detail : undefined;
+        return Promise.reject(new Error(detail ?? `HTTP ${error.response?.status ?? 'error'}`));
+      } catch {
+        return Promise.reject(new Error(`HTTP ${error.response?.status ?? 'error'}: ${error.response?.statusText ?? 'Unknown error'}`));
+      }
+    }
+
+    // NORMAL JSON ERROR RESPONSES
+    const detail  = error.response?.data?.detail;
     const message = typeof detail === 'string'
       ? detail
       : error.message ?? 'An unexpected error occurred';
 
-    // Attach clean message to the error for components to use
-    const normalizedError = new Error(message);
-    return Promise.reject(normalizedError);
+    return Promise.reject(new Error(message));
   }
 );
 
