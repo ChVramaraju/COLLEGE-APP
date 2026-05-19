@@ -22,10 +22,10 @@
 import {
   useState, useEffect, useCallback, useRef, type JSX, type KeyboardEvent,
 } from 'react';
-import { Link, useSearchParams, useNavigate } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, CheckCircle2, AlertTriangle,
-  Save, CheckCheck, RotateCcw,
+  Save, CheckCheck,
 } from 'lucide-react';
 
 import {
@@ -66,8 +66,6 @@ interface EditRow {
 
 export default function EditAttendanceSessionPage(): JSX.Element {
   const [params]   = useSearchParams();
-  const navigate   = useNavigate();
-
   const sectionId    = params.get('sectionId');
   const date         = params.get('date');
   const subject      = params.get('subject');
@@ -361,7 +359,7 @@ function EditStudentRow({
 }): JSX.Element {
   const { record, student, status, remarks } = row;
 
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLLIElement>) => {
     const map: Record<string, AttendanceStatus> = {
       '1': 'present', '2': 'absent', '3': 'late', '4': 'excused',
     };

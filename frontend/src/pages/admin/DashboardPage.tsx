@@ -144,7 +144,7 @@ export default function AdminDashboardPage() {
           {gpaData.length > 0 ? (
             <ResponsiveContainer width="100%" height={220}>
               <PieChart>
-                <Pie data={gpaData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`} labelLine={false}>
+                <Pie data={gpaData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={({ name, percent }) => `${name}: ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false}>
                   {gpaData.map((_, i) => (
                     <Cell key={i} fill={GPA_COLORS[i % GPA_COLORS.length]} />
                   ))}

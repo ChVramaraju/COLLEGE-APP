@@ -176,7 +176,7 @@ export default function TestAnalyticsPage(): JSX.Element {
                     <XAxis dataKey="name" tick={{ fontSize: 11 }} />
                     <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
                     <Tooltip
-                      formatter={(v: number) => [`${v}%`, 'Accuracy']}
+                      formatter={(v) => [`${Number(v)}%`, 'Accuracy']}
                       contentStyle={{ fontSize: 12 }}
                     />
                     <Bar dataKey="accuracy" radius={[4, 4, 0, 0]}>

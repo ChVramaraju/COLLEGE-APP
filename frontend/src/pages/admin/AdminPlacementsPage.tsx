@@ -12,7 +12,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import {
   Briefcase, Plus, RefreshCw, Users, MoreVertical,
   Eye, Pencil, ToggleLeft, ToggleRight, Trash2,
-  TrendingUp, IndianRupee,
+  IndianRupee,
 } from 'lucide-react';
 import {
   getJobPostings, getPlacementAnalytics,

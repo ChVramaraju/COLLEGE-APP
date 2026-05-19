@@ -76,7 +76,7 @@ export default function EditFacultyNotePage(): JSX.Element {
 
 function EditNoteEditor({
   noteId,
-  onBack,
+  onBack: _onBack,
 }: {
   noteId: number;
   onBack: () => void;

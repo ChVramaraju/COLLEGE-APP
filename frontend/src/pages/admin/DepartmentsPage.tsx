@@ -9,7 +9,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
 } from 'recharts';
-import { Building2, Users, BarChart3 } from 'lucide-react';
+import { Building2, Users } from 'lucide-react';
 import { useAdminDashboard } from '@/hooks/useAdminDashboard';
 import { ChartCard } from '@/components/admin/ChartCard';
 

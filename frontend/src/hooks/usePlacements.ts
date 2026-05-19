@@ -20,7 +20,7 @@ import {
 import { getJobPostings, applyToJob } from '@/services/placementService';
 import { getMyApplications } from '@/services/placementService';
 import type {
-  JobPosting, PlacementFilters, EMPTY_PLACEMENT_FILTERS,
+  JobPosting, PlacementFilters,
 } from '@/types/placement';
 
 // Satisfy TypeScript — import the constant, not just the type
@@ -67,7 +67,7 @@ export function usePlacements(): UsePlacementsReturn {
         setJobs(posts);
         setAppliedIds(new Set(apps.map(a => a.job_posting_id)));
       })
-      .catch(e => {
+      .catch(_ => {
         if (cancelled) return;
         // If applications fetch fails, still show jobs
         getJobPostings(true)

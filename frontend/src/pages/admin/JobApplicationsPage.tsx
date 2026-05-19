@@ -10,8 +10,8 @@
 import { useState, useEffect, useCallback, type JSX } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Users, RefreshCw, ChevronDown, Loader2,
-  CheckCircle2, XCircle, Star, Clock, Eye,
+  ArrowLeft, Users, RefreshCw, Loader2,
+  CheckCircle2, XCircle, Star, Clock,
 } from 'lucide-react';
 import {
   getJobApplications, getJobPosting,

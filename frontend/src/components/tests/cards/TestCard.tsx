@@ -13,7 +13,7 @@
 // Business logic (starting, navigating) lives in useTests.
 // ============================================================
 
-import { ComponentType }                 from 'react';
+import type { ComponentType }            from 'react';
 import { Clock, BookOpen, Award, Hash }  from 'lucide-react';
 
 import type { TestWithStatus }           from '@/types/test';

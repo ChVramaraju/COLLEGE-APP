@@ -13,8 +13,7 @@
 import { useState, useEffect, type JSX } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CalendarCheck, PlusCircle, ClipboardList, AlertTriangle,
-  CheckCircle2, XCircle, Clock, Loader2, ArrowRight, Users,
+  CalendarCheck, PlusCircle, ClipboardList, AlertTriangle, ArrowRight,
 } from 'lucide-react';
 
 import {

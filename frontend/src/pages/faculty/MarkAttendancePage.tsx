@@ -264,7 +264,6 @@ function MarkingPanel({
   onBack:          () => void;
   onSubmit:        () => void;
 }): JSX.Element {
-  const section = String(sessionForm.section_id);
   const date    = sessionForm.attendance_date
     ? new Date(sessionForm.attendance_date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
     : '';
@@ -358,7 +357,7 @@ function StudentRow({
   const { student, status, remarks } = row;
 
   // Keyboard shortcut: 1=Present 2=Absent 3=Late 4=Excused
-  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = useCallback((e: KeyboardEvent<HTMLLIElement>) => {
     const map: Record<string, AttendanceStatus> = {
       '1': 'present', '2': 'absent', '3': 'late', '4': 'excused',
     };

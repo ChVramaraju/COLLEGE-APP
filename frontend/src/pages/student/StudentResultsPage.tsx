@@ -25,7 +25,7 @@ import {
 } from 'recharts';
 import {
   Trophy, TrendingUp, CheckCircle2, XCircle,
-  Target, BarChart3, Loader2, AlertTriangle,
+  Target, BarChart3, AlertTriangle,
   ClipboardList, Calendar, BookOpen, RotateCcw,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -130,8 +130,6 @@ export default function StudentResultsPage(): JSX.Element {
   const stats    = useMemo(() => computeStats(results), [results]);
   const trend    = useMemo(() => buildTrend(results), [results]);
   const subjects = useMemo(() => buildSubjectBreakdown(results), [results]);
-  const submitted = useMemo(() => results.filter(r => r.is_submitted), [results]);
-
   return (
     <div className="mx-auto max-w-6xl px-4 py-8">
 
@@ -241,8 +239,8 @@ function TrendChart({ data }: { data: TrendPoint[] }): JSX.Element {
           <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
           <Tooltip
             contentStyle={{ borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '12px' }}
-            formatter={(v: number) => [`${v}%`, 'Score']}
-            labelFormatter={(l: string) => l}
+            formatter={(v) => [`${Number(v)}%`, 'Score']}
+            labelFormatter={(l) => String(l)}
           />
           <ReferenceLine y={PASS_THRESHOLD} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: 'Pass', position: 'right', fontSize: 10, fill: '#f59e0b' }} />
           <ReferenceLine y={75} stroke="#22c55e" strokeDasharray="4 4" label={{ value: '75%', position: 'right', fontSize: 10, fill: '#22c55e' }} />
@@ -278,9 +276,10 @@ function SubjectChart({ data }: { data: SubjectPoint[] }): JSX.Element {
           <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#94a3b8' }} unit="%" />
           <Tooltip
             contentStyle={{ borderRadius: '12px', border: '1px solid #e2e8f0', fontSize: '12px' }}
-            formatter={(v: number, _name: string, entry: { payload: SubjectPoint }) => [
-              `${v}% (${entry.payload.count} test${entry.payload.count > 1 ? 's' : ''})`, 'Avg',
-            ]}
+            formatter={(v, _name, entry) => {
+              const p = entry.payload as SubjectPoint;
+              return [`${Number(v)}% (${p.count} test${p.count > 1 ? 's' : ''})`, 'Avg'];
+            }}
           />
           <ReferenceLine y={PASS_THRESHOLD} stroke="#f59e0b" strokeDasharray="4 4" />
           <Bar dataKey="avg" radius={[6, 6, 0, 0]}>

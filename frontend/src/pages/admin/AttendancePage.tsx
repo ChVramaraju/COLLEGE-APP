@@ -202,7 +202,7 @@ export default function AdminAttendancePage(): JSX.Element {
                 tickFormatter={(v: number) => `${v}%`}
               />
               <Tooltip
-                formatter={(value: number) => [`${value.toFixed(1)}%`, 'Avg Attendance']}
+                formatter={(value) => [`${Number(value).toFixed(1)}%`, 'Avg Attendance']}
                 contentStyle={{ borderRadius: '12px', border: '1px solid #e5e7eb', fontSize: '12px' }}
               />
               <ReferenceLine y={75} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: '75%', fill: '#f59e0b', fontSize: 10, position: 'right' }} />
