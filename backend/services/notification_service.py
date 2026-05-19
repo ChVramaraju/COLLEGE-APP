@@ -32,6 +32,7 @@ from backend.models.student import Student
 from backend.models.faculty import Faculty
 from backend.models.section import Section
 from backend.models.enums import NotificationType
+from backend.services.websocket_manager import ws_manager
 from backend.schemas.notification import (
     NotificationSendRequest,
     SectionNotificationRequest,
@@ -79,6 +80,29 @@ def create_notification(
     db.add(notif)
     db.commit()
     db.refresh(notif)
+
+    # Best-effort WebSocket push to online recipient
+    sender_name = None
+    try:
+        sender = db.query(User).filter(User.id == sender_user_id).first()
+        if sender:
+            sender_name = sender.full_name
+    except Exception:
+        pass
+    ws_manager.push_sync(data.recipient_user_id, {
+        "type": "notification",
+        "data": {
+            "id": notif.id,
+            "title": notif.title,
+            "message": notif.message,
+            "notification_type": notif.notification_type.value,
+            "is_read": False,
+            "is_broadcast": False,
+            "read_at": None,
+            "created_at": notif.created_at.isoformat() if notif.created_at else None,
+            "sender_name": sender_name,
+        },
+    })
     return notif
 
 
@@ -234,6 +258,23 @@ def create_system_notification(
         db.add(notif)
         db.flush()    # flush to DB within current transaction
         # Note: commit is caller's responsibility
+
+        # Best-effort WebSocket push (non-blocking, fire-and-forget)
+        from datetime import datetime, timezone
+        ws_manager.push_sync(recipient_user_id, {
+            "type": "notification",
+            "data": {
+                "id": notif.id,
+                "title": title,
+                "message": message,
+                "notification_type": notification_type.value,
+                "is_read": False,
+                "is_broadcast": False,
+                "read_at": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "sender_name": None,
+            },
+        })
     except Exception:
         pass   # Never propagate — notification failure is non-critical
 

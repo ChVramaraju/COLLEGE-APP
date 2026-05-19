@@ -22,11 +22,12 @@ import {
   BarChart3,
   Users,
   GraduationCap,
-  BookOpen,
   Briefcase,
-  Settings,
   LogOut,
   Building2,
+  Megaphone,
+  Activity,
+  UserCog,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useAuth } from '@/store/authStore';
@@ -65,13 +66,13 @@ const facultyNav: NavItem[] = [
 ];
 
 const adminNav: NavItem[] = [
-  { label: 'Dashboard',  to: '/admin/dashboard',     Icon: LayoutDashboard },
-  { label: 'Students',   to: '/admin/students',      Icon: GraduationCap   },
-  { label: 'Faculty',    to: '/admin/faculty',        Icon: Users           },
-  { label: 'Sections',   to: '/admin/sections',      Icon: Building2       },
-  { label: 'Subjects',   to: '/admin/subjects',      Icon: BookOpen        },
-  { label: 'Placement',  to: '/admin/placement',     Icon: Briefcase       },
-  { label: 'Settings',   to: '/admin/settings',      Icon: Settings        },
+  { label: 'Dashboard',    to: '/admin/dashboard',     Icon: LayoutDashboard },
+  { label: 'Users',        to: '/admin/users',         Icon: UserCog         },
+  { label: 'Departments',  to: '/admin/departments',   Icon: GraduationCap   },
+  { label: 'Sections',     to: '/admin/sections',      Icon: Building2       },
+  { label: 'Placement',    to: '/admin/placement',     Icon: Briefcase       },
+  { label: 'Announcements',to: '/admin/announcements', Icon: Megaphone       },
+  { label: 'System Health',to: '/admin/system-health', Icon: Activity        },
 ];
 
 const navByRole: Record<UserRole, NavItem[]> = {

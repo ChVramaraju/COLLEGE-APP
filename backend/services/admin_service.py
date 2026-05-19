@@ -16,8 +16,9 @@
 #   for large institutions (10,000+ students).
 # =============================================================
 
-from datetime import datetime, timezone
-from typing import Optional
+import calendar
+from datetime import datetime, timezone, date
+from typing import Optional, List
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from fastapi import HTTPException
@@ -33,7 +34,14 @@ from backend.schemas.admin import (
     AttendanceSummary, TestSummary, ResultSummary, NotificationSummary,
     UserAdminView, DepartmentPerformance, SectionPerformance,
     TopPerformer, InstitutionAnalyticsResponse,
+    SystemHealthResponse, AnnouncementRequest, AnnouncementResponse,
+    TrendsMonthPoint, TrendsResponse, ActivityItem,
+    AnnouncementAudience,
+    CreateUserRequest, UpdateUserRequest, DeleteUserResponse,
+    DepartmentsDataResponse, DeptOption,
 )
+from backend.auth.hashing import hash_password
+from backend.models.enums import Designation
 
 
 # ---------------------------------------------------------------
@@ -236,7 +244,13 @@ def list_all_users(
     skip: int = 0,
     limit: int = 50,
 ) -> list[User]:
-    q = db.query(User)
+    q = (
+        db.query(User)
+        .options(
+            joinedload(User.student_profile),
+            joinedload(User.faculty_profile),
+        )
+    )
     if role:
         q = q.filter(User.role == role)
     if is_active is not None:
@@ -416,3 +430,478 @@ def _get_gpa_distribution(db: Session) -> dict:
         return dist
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------
+# SYSTEM HEALTH
+# ---------------------------------------------------------------
+def get_system_health(db: Session) -> SystemHealthResponse:
+    from backend.services.websocket_manager import ws_manager
+    from backend.models.notification import Notification
+
+    try:
+        from backend.models.notes import Note
+        total_files = db.query(func.count(Note.id)).scalar() or 0
+    except Exception:
+        total_files = 0
+
+    try:
+        from backend.models.test_attempt import TestAttempt
+        total_attempts = (
+            db.query(func.count(TestAttempt.id))
+            .filter(TestAttempt.is_submitted == True)
+            .scalar() or 0
+        )
+    except Exception:
+        total_attempts = 0
+
+    return SystemHealthResponse(
+        ws_connections=ws_manager.connection_count(),
+        total_users=db.query(func.count(User.id)).scalar() or 0,
+        active_students=(
+            db.query(func.count(Student.id))
+            .join(User, Student.user_id == User.id)
+            .filter(User.is_active == True)
+            .scalar() or 0
+        ),
+        active_faculty=(
+            db.query(func.count(Faculty.id))
+            .join(User, Faculty.user_id == User.id)
+            .filter(User.is_active == True)
+            .scalar() or 0
+        ),
+        total_notifications_sent=(
+            db.query(func.count(Notification.id))
+            .filter(Notification.is_deleted == False)
+            .scalar() or 0
+        ),
+        total_files_uploaded=total_files,
+        total_attendance_records=db.query(func.count(Attendance.id)).scalar() or 0,
+        total_test_attempts=total_attempts,
+        total_sections=db.query(func.count(Section.id)).scalar() or 0,
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------
+# ANALYTICS TRENDS (last 6 months)
+# ---------------------------------------------------------------
+def get_analytics_trends(db: Session) -> TrendsResponse:
+    from backend.models.notification import Notification
+
+    now = datetime.now(timezone.utc)
+    monthly_data: List[TrendsMonthPoint] = []
+
+    for i in range(5, -1, -1):
+        # Compute month boundaries in Python, then compare at DB level
+        year  = now.year
+        month = now.month - i
+        while month <= 0:
+            month += 12
+            year  -= 1
+        _, last_day  = calendar.monthrange(year, month)
+        m_start = date(year, month, 1)
+        m_end   = date(year, month, last_day)
+        label   = m_start.strftime("%b %Y")
+
+        # Notifications sent that month
+        notif_count = (
+            db.query(func.count(Notification.id))
+            .filter(
+                func.date(Notification.created_at) >= m_start,
+                func.date(Notification.created_at) <= m_end,
+            )
+            .scalar() or 0
+        )
+
+        # Attendance records for that month
+        att_count = (
+            db.query(func.count(Attendance.id))
+            .filter(Attendance.date >= m_start, Attendance.date <= m_end)
+            .scalar() or 0
+        )
+
+        # Test attempts submitted that month (best-effort)
+        test_count = 0
+        try:
+            from backend.models.test_attempt import TestAttempt
+            test_count = (
+                db.query(func.count(TestAttempt.id))
+                .filter(
+                    TestAttempt.is_submitted == True,
+                    func.date(TestAttempt.submitted_at) >= m_start,
+                    func.date(TestAttempt.submitted_at) <= m_end,
+                )
+                .scalar() or 0
+            )
+        except Exception:
+            pass
+
+        monthly_data.append(TrendsMonthPoint(
+            month=label,
+            notifications_count=notif_count,
+            test_attempts_count=test_count,
+            attendance_records_count=att_count,
+        ))
+
+    # Dept student distribution
+    dept_rows = (
+        db.query(Student.department, func.count(Student.id))
+        .group_by(Student.department)
+        .all()
+    )
+    dept_dist = [{"dept": d.value, "count": c} for d, c in dept_rows]
+
+    return TrendsResponse(
+        monthly_data=monthly_data,
+        dept_student_distribution=dept_dist,
+        gpa_distribution=_get_gpa_distribution(db),
+    )
+
+
+# ---------------------------------------------------------------
+# ANNOUNCEMENTS — Role-targeted broadcast
+# ---------------------------------------------------------------
+def create_announcement(
+    db: Session,
+    sender_user_id: int,
+    req: AnnouncementRequest,
+) -> AnnouncementResponse:
+    from backend.models.notification import Notification
+    from backend.services.websocket_manager import ws_manager
+
+    # Build recipient query
+    q = db.query(User).filter(User.is_active == True)
+    if req.audience == AnnouncementAudience.students:
+        q = q.filter(User.role == UserRole.student)
+    elif req.audience == AnnouncementAudience.faculty:
+        q = q.filter(User.role == UserRole.faculty)
+    # AnnouncementAudience.all → no role filter
+
+    recipients = q.all()
+    count = 0
+    for user in recipients:
+        try:
+            n = Notification(
+                title=req.title,
+                message=req.message,
+                notification_type=req.notification_type,
+                sender_user_id=sender_user_id,
+                recipient_user_id=user.id,
+                is_broadcast=True,
+            )
+            db.add(n)
+            count += 1
+        except Exception:
+            continue
+
+    db.commit()
+
+    # Best-effort WS push to connected recipients
+    for user in recipients:
+        ws_manager.push_sync(user.id, {
+            "type": "notification",
+            "data": {
+                "id": 0,
+                "title": req.title,
+                "message": req.message,
+                "notification_type": req.notification_type.value,
+                "is_read": False,
+                "is_broadcast": True,
+                "read_at": None,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "sender_name": "Admin",
+            },
+        })
+
+    return AnnouncementResponse(
+        recipients_count=count,
+        message=f"Announcement sent to {count} recipients.",
+    )
+
+
+# ---------------------------------------------------------------
+# ACTIVITY FEED — Recent system-generated notifications
+# ---------------------------------------------------------------
+def get_activity_feed(db: Session, limit: int = 20) -> List[ActivityItem]:
+    from backend.models.notification import Notification
+    rows = (
+        db.query(Notification)
+        .filter(
+            Notification.sender_user_id.is_(None),  # system-generated only
+            Notification.is_deleted == False,
+        )
+        .order_by(Notification.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        ActivityItem(
+            id=n.id,
+            title=n.title,
+            message=n.message,
+            notification_type=n.notification_type.value,
+            created_at=n.created_at,
+        )
+        for n in rows
+    ]
+
+
+# ---------------------------------------------------------------
+# USER ADMINISTRATION — CRUD
+# ---------------------------------------------------------------
+
+def admin_create_user(db: Session, req: CreateUserRequest) -> User:
+    """
+    Creates a User row plus the role-specific profile (Student/Faculty)
+    in a single transaction.  Rolls back fully on any failure.
+    """
+    # ── Duplicate guards ──────────────────────────────────────────
+    if db.query(User).filter(User.username == req.username).first():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Username '{req.username}' is already taken.",
+        )
+    if req.email:
+        if db.query(User).filter(User.email == req.email).first():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Email '{req.email}' is already registered.",
+            )
+
+    try:
+        # ── Core user row ─────────────────────────────────────────
+        user = User(
+            username=req.username,
+            full_name=req.full_name,
+            email=req.email,
+            hashed_password=hash_password(req.password),
+            role=req.role,
+            is_active=True,
+        )
+        db.add(user)
+        db.flush()   # generates user.id without committing
+
+        # ── Role-specific profile ─────────────────────────────────
+        if req.role == UserRole.student:
+            dept = Department(req.department)
+            profile = Student(
+                user_id=user.id,
+                roll_number=req.username,
+                department=dept,
+                semester=req.semester,
+                section_id=req.section_id,
+                admission_year=req.admission_year or datetime.now().year,
+            )
+            db.add(profile)
+
+        elif req.role == UserRole.faculty:
+            dept = Department(req.department)
+            desig = Designation(req.designation)
+            profile = Faculty(
+                user_id=user.id,
+                employee_id=req.username,
+                department=dept,
+                designation=desig,
+            )
+            db.add(profile)
+
+        # admin role: only the users row is needed — no separate profile table
+
+        db.commit()
+        db.refresh(user)
+        return user
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create user: {str(exc)}",
+        )
+
+
+def admin_update_user(
+    db: Session,
+    user_id: int,
+    req: UpdateUserRequest,
+    current_admin_id: int,
+) -> User:
+    """
+    Partial-update any user including role-specific profile fields.
+    Uses model_fields_set to distinguish 'not sent' from 'set to None'.
+    Transaction-safe: rolled back on any failure.
+    """
+    user = (
+        db.query(User)
+        .options(
+            joinedload(User.student_profile),
+            joinedload(User.faculty_profile),
+        )
+        .filter(User.id == user_id)
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    fields = req.model_fields_set
+    try:
+        # ── Core fields ───────────────────────────────────────────
+        if 'full_name' in fields and req.full_name is not None:
+            user.full_name = req.full_name
+
+        if 'email' in fields:
+            if req.email is not None:
+                dup = (
+                    db.query(User)
+                    .filter(User.email == req.email, User.id != user_id)
+                    .first()
+                )
+                if dup:
+                    raise HTTPException(status_code=400, detail="Email already in use.")
+            user.email = req.email
+
+        # ── Student profile ───────────────────────────────────────
+        if user.role == UserRole.student:
+            profile = user.student_profile
+            if profile is not None:
+                if 'section_id' in fields:
+                    if req.section_id is not None:
+                        exists = db.query(Section).filter(Section.id == req.section_id).first()
+                        if not exists:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Section {req.section_id} does not exist.",
+                            )
+                    profile.section_id = req.section_id   # None = unassign
+
+                if 'semester' in fields and req.semester is not None:
+                    profile.semester = req.semester
+
+        # ── Faculty profile ───────────────────────────────────────
+        elif user.role == UserRole.faculty:
+            profile = user.faculty_profile
+            if profile is not None:
+                if 'department' in fields and req.department is not None:
+                    try:
+                        profile.department = Department(req.department)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid department: '{req.department}'.",
+                        )
+
+                if 'designation' in fields and req.designation is not None:
+                    try:
+                        profile.designation = Designation(req.designation)
+                    except ValueError:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid designation: '{req.designation}'.",
+                        )
+
+        db.commit()
+        db.refresh(user)
+        # Re-load profiles after refresh so model_validator can access them
+        _ = user.student_profile
+        _ = user.faculty_profile
+        return user
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(exc)}")
+
+
+def admin_reset_password(db: Session, user_id: int, new_password: str) -> User:
+    """
+    Admin-initiated password reset.  Hashes the new password and
+    persists it.  The target user's sessions remain valid until
+    their token expires — acceptable trade-off for simplicity.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    user.hashed_password = hash_password(new_password)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def admin_delete_user(
+    db: Session,
+    user_id: int,
+    current_admin_id: int,
+) -> DeleteUserResponse:
+    """
+    Soft-deletes a user by deactivating them.
+    Hard safety guards:
+      - Cannot delete yourself
+      - Cannot deactivate the last remaining admin
+    """
+    if user_id == current_admin_id:
+        raise HTTPException(
+            status_code=400,
+            detail="You cannot delete your own account.",
+        )
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if user.role == UserRole.admin:
+        active_admin_count = (
+            db.query(func.count(User.id))
+            .filter(User.role == UserRole.admin, User.is_active == True)
+            .scalar() or 0
+        )
+        if active_admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot remove the last active admin account.",
+            )
+
+    user.is_active = False
+    db.commit()
+    return DeleteUserResponse(
+        user_id=user_id,
+        message=f"User '{user.username}' has been deactivated.",
+    )
+
+
+def get_departments_data() -> DepartmentsDataResponse:
+    """
+    Returns the Department and Designation enum values as
+    human-readable option lists for frontend dropdowns.
+    """
+    dept_labels = {
+        "cse":   "Computer Science (CSE)",
+        "ece":   "Electronics & Comm. (ECE)",
+        "mech":  "Mechanical (MECH)",
+        "civil": "Civil Engineering",
+        "eee":   "Electrical & Electronics (EEE)",
+        "it":    "Information Technology (IT)",
+        "aids":  "AI & Data Science (AIDS)",
+    }
+    desig_labels = {
+        "hod":            "Head of Department",
+        "professor":      "Professor",
+        "assoc_prof":     "Associate Professor",
+        "asst_prof":      "Assistant Professor",
+        "lecturer":       "Lecturer",
+        "lab_instructor": "Lab Instructor",
+    }
+    return DepartmentsDataResponse(
+        departments=[
+            DeptOption(value=d.value, label=dept_labels.get(d.value, d.value.upper()))
+            for d in Department
+        ],
+        designations=[
+            DeptOption(value=d.value, label=desig_labels.get(d.value, d.value))
+            for d in Designation
+        ],
+    )

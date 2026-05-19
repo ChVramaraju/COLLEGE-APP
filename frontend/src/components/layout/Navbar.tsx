@@ -8,9 +8,10 @@
 // hamburger is hidden.
 // ============================================================
 
-import { Menu, Bell, User } from 'lucide-react';
+import { Menu, User } from 'lucide-react';
 import { useAuth } from '@/store/authStore';
 import type { UserRole } from '@/types';
+import NotificationBell from '@/components/notifications/NotificationBell';
 
 const roleLabels: Record<UserRole, string> = {
   student: 'Student',
@@ -42,12 +43,7 @@ export default function Navbar({ onMenuClick, pageTitle = 'Dashboard' }: NavbarP
 
       {/* Right: notifications + user info */}
       <div className="flex items-center gap-3">
-        {/* Notification bell — wired to /notifications in a future step */}
-        <button className="relative rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
-          <Bell className="h-5 w-5" />
-          {/* Unread badge — placeholder for notification count */}
-          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-indigo-600" />
-        </button>
+        <NotificationBell />
 
         {/* User avatar + role */}
         <div className="flex items-center gap-2.5 rounded-lg px-3 py-2">

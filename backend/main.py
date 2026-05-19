@@ -7,6 +7,7 @@
 # all route modules (like plugging in feature boards).
 # =============================================================
 
+import asyncio
 import logging
 import logging.config
 from contextlib import asynccontextmanager
@@ -73,6 +74,7 @@ from backend.routes import attendance as attendance_router
 from backend.routes import student as student_router
 from backend.routes import faculty as faculty_router
 from backend.routes import section as section_router
+from backend.services.websocket_manager import ws_manager
 
 # ---------------------------------------------------------------
 # LIFESPAN — Controlled startup and shutdown
@@ -103,7 +105,10 @@ from backend.routes import section as section_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
-    #
+    # Register the running event loop so ws_manager.push_sync() can
+    # schedule async WebSocket sends from synchronous service code.
+    ws_manager.set_loop(asyncio.get_event_loop())
+
     # SCHEMA MANAGEMENT — Alembic owns this now.
     #
     # create_all() has been intentionally removed.

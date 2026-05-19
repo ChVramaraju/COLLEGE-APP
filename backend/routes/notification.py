@@ -13,13 +13,16 @@
 #   GET  /notifications/analytics         [admin]         → system stats
 # =============================================================
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 from typing import Optional
+import json
 
-from backend.database.connection import get_db
+from backend.database.connection import get_db, SessionLocal
 from backend.auth.dependencies import get_current_user, get_current_admin
+from backend.auth.jwt import verify_access_token
 from backend.models.user import User, UserRole
+from backend.services.websocket_manager import ws_manager
 from backend.schemas.notification import (
     NotificationSendRequest,
     SectionNotificationRequest,
@@ -206,3 +209,75 @@ def dismiss_notification(
     current_user: User = Depends(get_current_user),
 ):
     return soft_delete_notification(db, current_user.id, notification_id)
+
+
+# ---------------------------------------------------------------
+# WS /notifications/ws — Real-time notification stream
+# ---------------------------------------------------------------
+# Authentication: JWT passed as ?token= query parameter.
+# Browser WebSocket API cannot set custom headers, so the token
+# must travel as a URL query param for the initial handshake.
+#
+# CONNECTION LIFECYCLE:
+#   1. Client connects with ?token=<jwt>
+#   2. Server validates JWT → closes 4001 if invalid
+#   3. Server sends {"type": "connected"}
+#   4. Client listens for {"type": "notification", "data": {...}}
+#   5. Client sends {"type": "ping"} every ~25s for keep-alive
+#   6. Server replies {"type": "pong"}
+#   7. On client disconnect → ws_manager removes connection
+#
+# PUSH SOURCE:
+#   notification_service.py calls ws_manager.push_sync() after
+#   creating each notification row, delivering it instantly to
+#   any open tab for that recipient.
+# ---------------------------------------------------------------
+@router.websocket("/ws")
+async def notifications_websocket(
+    websocket: WebSocket,
+    token: str = Query(...),
+):
+    # ── 1. JWT validation ────────────────────────────────────────
+    try:
+        payload = verify_access_token(token)
+        user_id = int(payload["sub"])
+    except Exception:
+        await websocket.close(code=4001)
+        return
+
+    # ── 2. User existence + active check ────────────────────────
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(
+            User.id == user_id,
+            User.is_active == True,
+        ).first()
+        if not user:
+            await websocket.close(code=4001)
+            return
+    finally:
+        db.close()
+
+    # ── 3. Register connection ───────────────────────────────────
+    await ws_manager.connect(user_id, websocket)
+    try:
+        await websocket.send_json({"type": "connected", "user_id": user_id})
+
+        # ── 4. Message loop ──────────────────────────────────────
+        while True:
+            try:
+                raw = await websocket.receive_text()
+                try:
+                    msg = json.loads(raw)
+                    if isinstance(msg, dict) and msg.get("type") == "ping":
+                        await websocket.send_json({"type": "pong"})
+                except (json.JSONDecodeError, AttributeError):
+                    pass  # Ignore malformed frames
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                break
+
+    finally:
+        # ── 5. Cleanup on any exit path ──────────────────────────
+        ws_manager.disconnect(user_id, websocket)

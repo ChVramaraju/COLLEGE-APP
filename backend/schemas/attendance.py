@@ -197,3 +197,51 @@ class LowAttendanceAlert(BaseModel):
     full_name: str
     overall_percentage: float
     classes_needed_to_reach_75: int   # How many consecutive present needed
+
+
+# ---------------------------------------------------------------
+# STUDENT BRIEF FOR ATTENDANCE — Richer than SectionBrief
+# ---------------------------------------------------------------
+class AttendanceStudentBrief(BaseModel):
+    """
+    Returned by GET /attendance/section/{id}/students
+    Used by the mark-attendance form to show the student roster.
+    Includes full_name (from User) which plain StudentBriefForSection lacks.
+    """
+    id: int
+    roll_number: str
+    full_name: str
+    semester: int
+
+
+# ---------------------------------------------------------------
+# SESSION SUMMARY — One grouped attendance session
+# ---------------------------------------------------------------
+class AttendanceSessionSummary(BaseModel):
+    """
+    Returned by GET /attendance/history (faculty).
+    One row = one unique (section, date, subject, period) session.
+    Counts are pre-aggregated by the service (SQL GROUP BY).
+    """
+    section_id: int
+    section_name: str
+    subject: str
+    attendance_date: date
+    period_number: int
+    total: int
+    present: int
+    absent: int
+    late: int
+
+
+# ---------------------------------------------------------------
+# UPDATE ATTENDANCE ENTRY — PATCH a single record
+# ---------------------------------------------------------------
+class UpdateAttendanceEntry(BaseModel):
+    """
+    Body for PATCH /attendance/{record_id}
+    Faculty corrects a student's status after the fact.
+    Only status + remarks are mutable — session metadata is immutable.
+    """
+    status: AttendanceStatus
+    remarks: Optional[str] = Field(None, max_length=200)

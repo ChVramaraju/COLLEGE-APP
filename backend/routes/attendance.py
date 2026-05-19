@@ -33,6 +33,9 @@ from backend.schemas.attendance import (
     StudentAttendanceAnalytics,
     SectionAttendanceAnalytics,
     LowAttendanceAlert,
+    AttendanceStudentBrief,
+    AttendanceSessionSummary,
+    UpdateAttendanceEntry,
 )
 from backend.services.attendance_service import (
     mark_attendance_bulk,
@@ -41,6 +44,9 @@ from backend.services.attendance_service import (
     calculate_student_analytics,
     calculate_section_analytics,
     get_low_attendance_students,
+    get_students_for_attendance,
+    get_faculty_attendance_history,
+    update_attendance_record,
 )
 from backend.services.student_service import get_student_by_user_id
 from backend.services.faculty_service import get_faculty_by_user_id
@@ -205,3 +211,51 @@ def get_low_attendance_route(
     if current_user.role not in (UserRole.admin, UserRole.faculty):
         raise HTTPException(status_code=403, detail="Admin or Faculty access required.")
     return get_low_attendance_students(db, section_id, threshold)
+
+
+# ---------------------------------------------------------------
+# GET /attendance/section/{id}/students — Student roster for marking
+# ---------------------------------------------------------------
+@router.get(
+    "/section/{section_id}/students",
+    response_model=List[AttendanceStudentBrief],
+    summary="Get active students in a section for attendance marking (Faculty only)",
+)
+def get_section_students_for_attendance(
+    section_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    return get_students_for_attendance(db, section_id)
+
+
+# ---------------------------------------------------------------
+# GET /attendance/history — Faculty's own session history
+# ---------------------------------------------------------------
+@router.get(
+    "/history",
+    response_model=List[AttendanceSessionSummary],
+    summary="Get all attendance sessions marked by the current faculty",
+)
+def get_my_attendance_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    return get_faculty_attendance_history(db, current_user.id)
+
+
+# ---------------------------------------------------------------
+# PATCH /attendance/{record_id} — Correct a single student's status
+# ---------------------------------------------------------------
+@router.patch(
+    "/{record_id}",
+    response_model=AttendanceResponse,
+    summary="Update a single attendance record's status or remarks (Faculty only)",
+)
+def patch_attendance_record(
+    record_id: int,
+    data: UpdateAttendanceEntry,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_faculty),
+):
+    return update_attendance_record(db, record_id, current_user.id, data)

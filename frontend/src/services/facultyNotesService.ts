@@ -134,6 +134,7 @@ export async function uploadNote(
     file:         File;
   },
   onProgress?: UploadProgressCallback,
+  signal?: AbortSignal,
 ): Promise<FacultyNoteItem> {
   const form = new FormData();
   form.append('title',        params.title);
@@ -155,6 +156,7 @@ export async function uploadNote(
     // Upload can take longer than the default 15s timeout for large files.
     // 5 minutes is generous even for slow connections and 20 MB files.
     timeout: 300_000,
+    signal,
   });
 
   return res.data;
@@ -174,9 +176,10 @@ export async function uploadNote(
 // IMPORTANT: Only works on UNPUBLISHED notes. Published notes cannot have
 // their file replaced because students may have already downloaded it.
 export async function replaceNoteFile(
-  noteId:     number,
-  file:       File,
+  noteId:      number,
+  file:        File,
   onProgress?: UploadProgressCallback,
+  signal?:     AbortSignal,
 ): Promise<FacultyNoteItem> {
   const form = new FormData();
   form.append('file', file, file.name);
@@ -192,6 +195,7 @@ export async function replaceNoteFile(
         }
       },
       timeout: 300_000,
+      signal,
     },
   );
 

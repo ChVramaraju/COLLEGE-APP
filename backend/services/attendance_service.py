@@ -35,6 +35,9 @@ from backend.schemas.attendance import (
     SubjectBreakdown,
     SectionAttendanceAnalytics,
     LowAttendanceAlert,
+    AttendanceStudentBrief,
+    AttendanceSessionSummary,
+    UpdateAttendanceEntry,
 )
 
 ATTENDANCE_THRESHOLD = 75.0   # Standard minimum attendance percentage
@@ -575,3 +578,171 @@ def calculate_section_analytics(
         average_attendance_percentage=avg_pct,
         student_summaries=summaries,
     )
+
+
+# ---------------------------------------------------------------
+# GET STUDENTS FOR ATTENDANCE MARKING — Roster with full names
+# ---------------------------------------------------------------
+def get_students_for_attendance(
+    db: Session,
+    section_id: int,
+) -> list[AttendanceStudentBrief]:
+    """
+    Returns the active student roster for a section, including full names.
+    Used by the mark-attendance form to build the student list UI.
+
+    Sorted by roll_number for a consistent, predictable order on screen.
+    """
+    section = db.query(Section).filter(Section.id == section_id).first()
+    if not section:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Section ID {section_id} not found.",
+        )
+
+    students = (
+        db.query(Student)
+        .join(User, Student.user_id == User.id)
+        .filter(Student.section_id == section_id, User.is_active == True)
+        .order_by(Student.roll_number)
+        .all()
+    )
+
+    return [
+        AttendanceStudentBrief(
+            id=s.id,
+            roll_number=s.roll_number,
+            full_name=s.user.full_name if s.user else "",
+            semester=s.semester,
+        )
+        for s in students
+    ]
+
+
+# ---------------------------------------------------------------
+# GET FACULTY ATTENDANCE HISTORY — Sessions grouped by metadata
+# ---------------------------------------------------------------
+def get_faculty_attendance_history(
+    db: Session,
+    faculty_user_id: int,
+) -> list[AttendanceSessionSummary]:
+    """
+    Returns all unique attendance sessions marked by this faculty,
+    grouped by (section_id, subject, attendance_date, period_number).
+
+    Uses SQL GROUP BY + CASE aggregation — one query for all sessions.
+    Returned newest-first so the faculty sees recent activity at the top.
+    """
+    faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
+    if not faculty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Faculty profile not found.",
+        )
+
+    rows = (
+        db.query(
+            Attendance.section_id,
+            Section.name.label("section_name"),
+            Attendance.subject,
+            Attendance.attendance_date,
+            Attendance.period_number,
+            func.count(Attendance.id).label("total"),
+            func.sum(
+                case(
+                    [(Attendance.status.in_(["present", "late"]), 1)],
+                    else_=0,
+                )
+            ).label("present"),
+            func.sum(
+                case([(Attendance.status == AttendanceStatus.absent, 1)], else_=0)
+            ).label("absent"),
+            func.sum(
+                case([(Attendance.status == AttendanceStatus.late, 1)], else_=0)
+            ).label("late"),
+        )
+        .join(Section, Attendance.section_id == Section.id)
+        .filter(Attendance.faculty_id == faculty.id)
+        .group_by(
+            Attendance.section_id,
+            Section.name,
+            Attendance.subject,
+            Attendance.attendance_date,
+            Attendance.period_number,
+        )
+        .order_by(Attendance.attendance_date.desc(), Attendance.period_number)
+        .all()
+    )
+
+    return [
+        AttendanceSessionSummary(
+            section_id=row.section_id,
+            section_name=row.section_name,
+            subject=row.subject,
+            attendance_date=row.attendance_date,
+            period_number=row.period_number,
+            total=row.total or 0,
+            present=int(row.present or 0),
+            absent=int(row.absent or 0),
+            late=int(row.late or 0),
+        )
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------
+# UPDATE ATTENDANCE RECORD — Correct a single student's status
+# ---------------------------------------------------------------
+def update_attendance_record(
+    db: Session,
+    record_id: int,
+    faculty_user_id: int,
+    data: UpdateAttendanceEntry,
+) -> Attendance:
+    """
+    Allows faculty to correct a previously-marked attendance record.
+
+    PERMISSION RULES:
+      → Faculty can only edit records they originally marked (faculty_id match)
+        OR records for sections in their own department.
+      → Admins bypass these checks in a separate admin endpoint.
+
+    IMMUTABLE FIELDS:
+      → section_id, student_id, attendance_date, subject, period_number
+      → Only status and remarks can be changed.
+
+    AUDIT TRAIL:
+      → updated_at is automatically set by SQLAlchemy (onupdate=func.now())
+      → The original faculty_id is preserved — who marked vs. who last edited
+        is tracked via the updated_at timestamp.
+    """
+    record = db.query(Attendance).filter(Attendance.id == record_id).first()
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Attendance record ID {record_id} not found.",
+        )
+
+    faculty = db.query(Faculty).filter(Faculty.user_id == faculty_user_id).first()
+    if not faculty:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Faculty profile not found.",
+        )
+
+    # PERMISSION: must have originally marked it OR be same dept as section
+    section = db.query(Section).filter(Section.id == record.section_id).first()
+    owns_record   = record.faculty_id == faculty.id
+    same_dept     = section and section.department == faculty.department
+
+    if not (owns_record or same_dept):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to edit this attendance record.",
+        )
+
+    record.status  = data.status
+    record.remarks = data.remarks
+    db.commit()
+    db.refresh(record)
+    return record

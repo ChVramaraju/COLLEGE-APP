@@ -25,7 +25,15 @@
 // ============================================================
 
 import apiClient from '@/api/client';
-import type { AttendanceRecord, AttendanceAnalytics } from '@/types/attendance';
+import type {
+  AttendanceRecord,
+  AttendanceAnalytics,
+  AttendanceStudentBrief,
+  AttendanceSessionSummary,
+  BulkMarkPayload,
+  BulkMarkResult,
+  UpdateAttendancePayload,
+} from '@/types/attendance';
 
 // ---------------------------------------------------------------
 // GET /attendance/me → AttendanceRecord[]
@@ -40,5 +48,76 @@ export async function getMyAttendanceRecords(): Promise<AttendanceRecord[]> {
 // ---------------------------------------------------------------
 export async function getMyAttendanceAnalytics(): Promise<AttendanceAnalytics> {
   const res = await apiClient.get<AttendanceAnalytics>('/attendance/me/analytics');
+  return res.data;
+}
+
+
+// ============================================================
+// FACULTY FUNCTIONS
+// ============================================================
+
+// ---------------------------------------------------------------
+// GET /attendance/section/{id}/students → AttendanceStudentBrief[]
+// Returns the active student roster for attendance marking.
+// ---------------------------------------------------------------
+export async function getSectionStudentsForAttendance(
+  sectionId: number,
+): Promise<AttendanceStudentBrief[]> {
+  const res = await apiClient.get<AttendanceStudentBrief[]>(
+    `/attendance/section/${sectionId}/students`,
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------
+// POST /attendance/mark → BulkMarkResult
+// Marks attendance for an entire class session in one call.
+// ---------------------------------------------------------------
+export async function markAttendanceBulk(
+  payload: BulkMarkPayload,
+): Promise<BulkMarkResult> {
+  const res = await apiClient.post<BulkMarkResult>('/attendance/mark', payload);
+  return res.data;
+}
+
+// ---------------------------------------------------------------
+// GET /attendance/history → AttendanceSessionSummary[]
+// Faculty's own session history, grouped by session metadata.
+// ---------------------------------------------------------------
+export async function getFacultyAttendanceHistory(): Promise<AttendanceSessionSummary[]> {
+  const res = await apiClient.get<AttendanceSessionSummary[]>('/attendance/history');
+  return res.data;
+}
+
+// ---------------------------------------------------------------
+// GET /attendance/section/{id}/date/{date} → AttendanceRecord[]
+// Fetch all records for a specific session (to support edit flow).
+// Optional subject + period filters narrow to one session.
+// ---------------------------------------------------------------
+export async function getSessionRecords(
+  sectionId:      number,
+  date:           string,
+  subject?:       string,
+  periodNumber?:  number,
+): Promise<AttendanceRecord[]> {
+  const params: Record<string, string | number> = {};
+  if (subject)      params.subject       = subject;
+  if (periodNumber) params.period_number = periodNumber;
+  const res = await apiClient.get<AttendanceRecord[]>(
+    `/attendance/section/${sectionId}/date/${date}`,
+    { params },
+  );
+  return res.data;
+}
+
+// ---------------------------------------------------------------
+// PATCH /attendance/{id} → AttendanceRecord
+// Correct a single student's attendance status.
+// ---------------------------------------------------------------
+export async function patchAttendanceRecord(
+  recordId: number,
+  data:     UpdateAttendancePayload,
+): Promise<AttendanceRecord> {
+  const res = await apiClient.patch<AttendanceRecord>(`/attendance/${recordId}`, data);
   return res.data;
 }
