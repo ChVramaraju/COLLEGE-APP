@@ -12,6 +12,7 @@ import logging
 import logging.config
 import urllib.parse
 from contextlib import asynccontextmanager
+from sqlalchemy import inspect as sa_inspect, text as sa_text
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -113,14 +114,12 @@ async def lifespan(app: FastAPI):
     # --- STARTUP ---
 
     # ----------------------------------------------------------------
-    # DB CONFIGURATION DIAGNOSTICS
-    # Printed on every startup so Railway logs can confirm the correct
-    # host is being used.  Passwords are NEVER printed.
-    # Remove this block once Railway connectivity is verified stable.
+    # STARTUP DIAGNOSTICS — DB connection + schema health
+    # Passwords are NEVER logged. Remove once production is stable.
     # ----------------------------------------------------------------
     _db_url = settings.DATABASE_URL
     _parsed = urllib.parse.urlparse(_db_url)
-    _startup_logger.info("=" * 50)
+    _startup_logger.info("=" * 55)
     _startup_logger.info("DB CONFIG DIAGNOSTICS")
     _startup_logger.info("  Dialect  : %s", _parsed.scheme or "MISSING")
     _startup_logger.info("  Host     : %s", _parsed.hostname or "MISSING")
@@ -129,42 +128,47 @@ async def lifespan(app: FastAPI):
     _startup_logger.info("  Is local : %s", settings.is_local)
     _startup_logger.info("  SSL mode : %s", "disabled (local)" if settings.is_local else "sslmode=require")
     if settings.is_local:
-        _startup_logger.warning("  *** USING LOCALHOST — will fail on Railway if DATABASE_URL is wrong ***")
+        _startup_logger.warning("  HOST=localhost — fine for local dev")
     else:
-        _startup_logger.info("  *** USING REMOTE HOST — Railway Postgres expected ***")
-    _startup_logger.info("=" * 50)
+        _startup_logger.info("  HOST=remote — Railway Postgres")
+
+    # Alembic revision
+    try:
+        with engine.connect() as _conn:
+            _rev_row = _conn.execute(sa_text("SELECT version_num FROM alembic_version LIMIT 1")).fetchone()
+            _current_rev = _rev_row[0] if _rev_row else "none (fresh DB)"
+    except Exception as _rev_err:
+        _current_rev = f"error: {_rev_err}"
+    _startup_logger.info("  Alembic  : %s", _current_rev)
+
+    # Table existence check
+    try:
+        _inspector = sa_inspect(engine)
+        _live_tables = set(_inspector.get_table_names())
+        _startup_logger.info("  Tables detected  : %d", len(_live_tables))
+        _startup_logger.info("  grade_scales     : %s", "EXISTS" if "grade_scales" in _live_tables else "MISSING")
+        _startup_logger.info("  alembic_version  : %s", "EXISTS" if "alembic_version" in _live_tables else "MISSING")
+    except Exception as _insp_err:
+        _startup_logger.warning("  Table inspection failed: %s", _insp_err)
+    _startup_logger.info("=" * 55)
     # ----------------------------------------------------------------
 
     # Register the running event loop so ws_manager.push_sync() can
     # schedule async WebSocket sends from synchronous service code.
     ws_manager.set_loop(asyncio.get_event_loop())
 
-    # SCHEMA MANAGEMENT — Alembic owns this now.
+    # SCHEMA MANAGEMENT — bootstrap.py runs before this process.
     #
-    # create_all() has been intentionally removed.
+    # On Railway, railway.json startCommand runs:
+    #   python backend/database/bootstrap.py && uvicorn backend.main:app ...
     #
-    # WHY: create_all() is a one-way, non-reversible operation.
-    # It creates missing tables but NEVER modifies existing ones.
-    # It cannot add columns, rename columns, change types, or add
-    # indexes. It gives a false sense of safety in production.
+    # bootstrap.py handles two cases:
+    #   Fresh DB  → Base.metadata.create_all() + alembic stamp head
+    #   Existing  → alembic upgrade head (incremental migrations only)
     #
-    # Alembic is now the single source of truth for schema.
-    #
-    # LOCAL DEVELOPMENT:
-    #   On first run against a fresh DB, run once manually:
-    #     alembic upgrade head
-    #   This creates all tables from the migration history.
-    #
-    # PRODUCTION DEPLOY (Railway / Render / any platform):
-    #   Add to your deploy command / release phase:
-    #     alembic upgrade head && uvicorn backend.main:app ...
-    #   Alembic checks the alembic_version table, applies only
-    #   new migrations, and exits. Then the server starts.
-    #   Zero downtime. Zero data loss. Fully reversible.
-    #
+    # By the time lifespan runs here, all tables are guaranteed to exist.
     # WHAT RUNS ON STARTUP NOW:
     #   Only application-level init (uploads dir, seed data).
-    #   Schema is managed outside the app process entirely.
 
     # Ensure the uploads directory exists before the first request.
     ensure_upload_dir()

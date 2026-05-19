@@ -4,7 +4,7 @@
     "builder": "NIXPACKS"
   },
   "deploy": {
-    "startCommand": "alembic upgrade head && uvicorn backend.main:app --host 0.0.0.0 --port $PORT",
+    "startCommand": "python backend/database/bootstrap.py && uvicorn backend.main:app --host 0.0.0.0 --port $PORT",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
     "restartPolicyType": "ON_FAILURE",
