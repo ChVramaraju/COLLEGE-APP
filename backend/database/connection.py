@@ -12,11 +12,22 @@
 # This module is imported wherever DB access is needed.
 # =============================================================
 
+import logging
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
 from backend.config.settings import settings
+
+# Runs immediately when this module is imported — before any engine is built.
+# Confirms in Railway logs that the correct host is being used.
+logging.getLogger("db.connection").info(
+    "[DB ENGINE] Building engine → host=%s  local=%s  ssl=%s",
+    __import__("urllib.parse", fromlist=["urlparse"]).urlparse(settings.DATABASE_URL).hostname,
+    settings.is_local,
+    "disabled" if settings.is_local else "sslmode=require",
+)
 
 # ---------------------------------------------------------------
 # 1. THE ENGINE — Connection Pool Manager

@@ -20,7 +20,9 @@
 #   causing the "connection refused on localhost" crash in production.
 # =============================================================
 
+import logging
 import os
+import urllib.parse
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -66,17 +68,56 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_database_url(cls, v: str) -> str:
         """
-        Normalise the connection URL so SQLAlchemy always receives a
-        valid dialect string.
-
-        WHY: Railway (and legacy Heroku) issue URLs that start with
-        "postgres://" — the short form that psycopg2 accepts but
-        SQLAlchemy 2.x's engine factory rejects with:
-            "Could not parse rfc1738 URL from string 'postgres://...'"
-        Replacing the prefix with "postgresql://" fixes this silently.
+        1. Normalize postgres:// → postgresql:// (Railway/Heroku format).
+        2. Hard-guard: reject localhost URLs when running on Railway.
+           This surfaces the real problem immediately instead of crashing
+           deep inside SQLAlchemy with a confusing OperationalError.
         """
-        if isinstance(v, str) and v.startswith("postgres://"):
+        if not isinstance(v, str):
+            return v
+
+        # Normalize the dialect prefix
+        if v.startswith("postgres://"):
             v = "postgresql://" + v[len("postgres://"):]
+
+        # ----------------------------------------------------------------
+        # RAILWAY HARD GUARD
+        # Railway sets RAILWAY_ENVIRONMENT (and several other vars).
+        # If we detect Railway AND the URL still points to localhost,
+        # fail immediately with a clear, actionable error message.
+        #
+        # This means the Railway Variables tab has DATABASE_URL set
+        # to a localhost value (e.g., copied from local .env by mistake).
+        # FIX: In Railway → your backend service → Variables:
+        #   DATABASE_URL = ${{Postgres.DATABASE_URL}}
+        # ----------------------------------------------------------------
+        _railway_keys = (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_STATIC_URL",
+        )
+        _on_railway = any(os.environ.get(k) for k in _railway_keys)
+        if _on_railway:
+            _parsed = urllib.parse.urlparse(v)
+            if _parsed.hostname in ("localhost", "127.0.0.1"):
+                raise ValueError(
+                    "\n"
+                    "=" * 60 + "\n"
+                    "FATAL: DATABASE_URL points to localhost on Railway!\n"
+                    "=" * 60 + "\n"
+                    f"  Received URL host : {_parsed.hostname}\n"
+                    f"  Received URL port : {_parsed.port}\n"
+                    "\n"
+                    "  FIX — In Railway dashboard:\n"
+                    "    1. Go to your backend service\n"
+                    "    2. Open the Variables tab\n"
+                    "    3. Set:  DATABASE_URL = ${{Postgres.DATABASE_URL}}\n"
+                    "       (Use the reference variable, not a hardcoded URL)\n"
+                    "    4. Redeploy\n"
+                    "=" * 60
+                )
+
         return v
 
     # ----------------------------------------------------------------
@@ -144,3 +185,21 @@ class Settings(BaseSettings):
 # Single global instance — import this everywhere:
 #   from backend.config.settings import settings
 settings = Settings()
+
+# ---------------------------------------------------------------
+# MODULE-LEVEL DIAGNOSTICS
+# These lines run the instant settings.py is first imported —
+# before any engine is created, before lifespan runs.
+# They appear at the TOP of Railway deploy logs, making it trivial
+# to see which database host the app is targeting.
+# ---------------------------------------------------------------
+_diag_logger = logging.getLogger("db.config")
+_diag_parsed = urllib.parse.urlparse(settings.DATABASE_URL)
+_diag_logger.info("=" * 50)
+_diag_logger.info("[DB CONFIG] Dialect  : %s", _diag_parsed.scheme or "MISSING")
+_diag_logger.info("[DB CONFIG] Host     : %s", _diag_parsed.hostname or "MISSING")
+_diag_logger.info("[DB CONFIG] Port     : %s", _diag_parsed.port or "MISSING")
+_diag_logger.info("[DB CONFIG] Database : %s", (_diag_parsed.path or "").lstrip("/") or "MISSING")
+_diag_logger.info("[DB CONFIG] Is local : %s", settings.is_local)
+_diag_logger.info("[DB CONFIG] SSL      : %s", "disabled (local)" if settings.is_local else "sslmode=require")
+_diag_logger.info("=" * 50)
