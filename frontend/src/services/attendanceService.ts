@@ -33,6 +33,7 @@ import type {
   BulkMarkPayload,
   BulkMarkResult,
   UpdateAttendancePayload,
+  AdminAttendanceAnalytics,
 } from '@/types/attendance';
 
 // ---------------------------------------------------------------
@@ -119,5 +120,19 @@ export async function patchAttendanceRecord(
   data:     UpdateAttendancePayload,
 ): Promise<AttendanceRecord> {
   const res = await apiClient.patch<AttendanceRecord>(`/attendance/${recordId}`, data);
+  return res.data;
+}
+
+
+// ============================================================
+// ADMIN FUNCTIONS
+// ============================================================
+
+// ---------------------------------------------------------------
+// GET /attendance/admin/analytics → AdminAttendanceAnalytics
+// Institution-wide overview: dept breakdown, faculty activity.
+// ---------------------------------------------------------------
+export async function getAdminAttendanceAnalytics(): Promise<AdminAttendanceAnalytics> {
+  const res = await apiClient.get<AdminAttendanceAnalytics>('/attendance/admin/analytics');
   return res.data;
 }

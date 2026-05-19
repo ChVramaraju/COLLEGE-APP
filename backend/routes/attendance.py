@@ -36,6 +36,7 @@ from backend.schemas.attendance import (
     AttendanceStudentBrief,
     AttendanceSessionSummary,
     UpdateAttendanceEntry,
+    AdminAttendanceAnalytics,
 )
 from backend.services.attendance_service import (
     mark_attendance_bulk,
@@ -47,6 +48,7 @@ from backend.services.attendance_service import (
     get_students_for_attendance,
     get_faculty_attendance_history,
     update_attendance_record,
+    get_admin_attendance_analytics,
 )
 from backend.services.student_service import get_student_by_user_id
 from backend.services.faculty_service import get_faculty_by_user_id
@@ -72,6 +74,23 @@ def mark_attendance_route(
     current_user: User = Depends(get_current_faculty),
 ):
     return mark_attendance_bulk(db, current_user.id, data)
+
+
+# ---------------------------------------------------------------
+# GET /attendance/admin/analytics — Admin cross-section overview
+# ---------------------------------------------------------------
+# MUST be declared before /{record_id} to avoid path clash.
+# ---------------------------------------------------------------
+@router.get(
+    "/admin/analytics",
+    response_model=AdminAttendanceAnalytics,
+    summary="Institution-wide attendance analytics (Admin only)",
+)
+def get_admin_analytics(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin),
+):
+    return get_admin_attendance_analytics(db)
 
 
 # ---------------------------------------------------------------

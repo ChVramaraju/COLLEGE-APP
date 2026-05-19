@@ -191,30 +191,43 @@ def update_faculty(db: Session, faculty_id: int, data: FacultyUpdate) -> Faculty
 
 
 # ---------------------------------------------------------------
-# GET ASSIGNED SECTIONS — Faculty's managed sections
+# GET ASSIGNED SECTIONS — Faculty's taught sections (via assignments)
 # ---------------------------------------------------------------
 def get_assigned_sections(db: Session, faculty_id: int) -> list[Section]:
     """
-    Returns all sections where this faculty is the incharge.
+    Returns all UNIQUE sections this faculty is assigned to teach in.
 
-    Used by faculty dashboard — shows their class responsibilities.
+    Source of truth: FacultySectionAssignment table.
+    Replaces the old incharge_faculty_id filter which only found
+    sections where this faculty was the class incharge — a completely
+    different concept from "sections they actually teach in".
 
-    WHY query directly instead of faculty.sections_in_charge?
-    → Direct query is explicit — easier to add filters later
-      (e.g., only current academic year sections).
-    → Avoids relying on relationship lazy-loading behavior.
+    A faculty member may teach Data Structures AND OS in the same
+    section → that section appears ONCE in this result (deduplicated).
     """
-    # Verify faculty exists
+    from backend.models.faculty_assignment import FacultySectionAssignment
+
     faculty = db.query(Faculty).filter(Faculty.id == faculty_id).first()
     if not faculty:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Faculty ID {faculty_id} not found."
+            detail=f"Faculty ID {faculty_id} not found.",
         )
+
+    section_id_rows = (
+        db.query(FacultySectionAssignment.section_id)
+        .filter(FacultySectionAssignment.faculty_id == faculty_id)
+        .distinct()
+        .all()
+    )
+    section_ids = [row.section_id for row in section_id_rows]
+
+    if not section_ids:
+        return []
 
     sections = (
         db.query(Section)
-        .filter(Section.incharge_faculty_id == faculty_id)
+        .filter(Section.id.in_(section_ids))
         .order_by(Section.semester, Section.name)
         .all()
     )

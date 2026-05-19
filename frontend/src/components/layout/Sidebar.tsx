@@ -28,6 +28,7 @@ import {
   Megaphone,
   Activity,
   UserCog,
+  BookMarked,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useAuth } from '@/store/authStore';
@@ -70,6 +71,8 @@ const adminNav: NavItem[] = [
   { label: 'Users',        to: '/admin/users',         Icon: UserCog         },
   { label: 'Departments',  to: '/admin/departments',   Icon: GraduationCap   },
   { label: 'Sections',     to: '/admin/sections',      Icon: Building2       },
+  { label: 'Attendance',   to: '/admin/attendance',    Icon: CalendarCheck   },
+  { label: 'Assignments',  to: '/admin/faculty-assignments', Icon: BookMarked },
   { label: 'Placement',    to: '/admin/placement',     Icon: Briefcase       },
   { label: 'Announcements',to: '/admin/announcements', Icon: Megaphone       },
   { label: 'System Health',to: '/admin/system-health', Icon: Activity        },

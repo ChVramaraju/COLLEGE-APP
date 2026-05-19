@@ -137,6 +137,14 @@ class Section(Base):
     # Navigate from Section → all tests assigned to this section (One-to-Many)
     tests_assigned = relationship("Test", back_populates="section")
 
+    # Navigate from Section → all faculty teaching assignments (One-to-Many)
+    # Each row represents one faculty teaching one subject in this section.
+    faculty_assignments = relationship(
+        "FacultySectionAssignment",
+        back_populates="section",
+        cascade="all, delete-orphan",
+    )
+
     def __repr__(self):
         return (
             f"<Section {self.name} | {self.department} | "

@@ -240,3 +240,38 @@ export interface AttendancePiePoint {
   value: number;
   color: string;
 }
+
+
+// ---------------------------------------------------------------
+// CATEGORY 6: ADMIN ANALYTICS TYPES
+// Mirrors backend schemas/attendance.py admin additions.
+// ---------------------------------------------------------------
+
+// Mirrors: DepartmentAttendanceSummary
+export interface DepartmentAttendanceSummary {
+  department:           string;   // uppercase e.g. "CSE"
+  total_sections:       number;
+  total_students:       number;
+  total_sessions:       number;
+  avg_percentage:       number;
+  low_attendance_count: number;
+}
+
+// Mirrors: FacultyActivityItem
+export interface FacultyActivityItem {
+  faculty_id:        number;
+  faculty_name:      string;
+  total_sessions:    number;
+  last_marked_date:  string | null;   // ISO date "YYYY-MM-DD"
+}
+
+// Mirrors: AdminAttendanceAnalytics
+export interface AdminAttendanceAnalytics {
+  total_sessions:          number;
+  total_records:           number;
+  overall_avg_percentage:  number;
+  low_attendance_total:    number;
+  department_summaries:    DepartmentAttendanceSummary[];
+  faculty_activity:        FacultyActivityItem[];
+  generated_at:            string;   // ISO datetime
+}

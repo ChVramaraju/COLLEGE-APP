@@ -60,6 +60,7 @@ from backend.models import result as result_model
 from backend.models import semester_result as semester_result_model
 from backend.models import job_posting as job_posting_model
 from backend.models import placement_application as placement_application_model
+from backend.models import faculty_assignment as faculty_assignment_model
 
 from backend.routes import auth as auth_router
 from backend.routes import placement as placement_router
@@ -74,6 +75,7 @@ from backend.routes import attendance as attendance_router
 from backend.routes import student as student_router
 from backend.routes import faculty as faculty_router
 from backend.routes import section as section_router
+from backend.routes import faculty_assignment as faculty_assignment_router
 from backend.services.websocket_manager import ws_manager
 
 # ---------------------------------------------------------------
@@ -259,3 +261,4 @@ app.include_router(notification_router.router)
 app.include_router(result_router.router)
 app.include_router(admin_router.router)
 app.include_router(placement_router.router)
+app.include_router(faculty_assignment_router.router)

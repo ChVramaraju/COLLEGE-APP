@@ -20,7 +20,7 @@ from sqlalchemy import func, case, and_
 from sqlalchemy.exc import IntegrityError
 from fastapi import HTTPException, status
 from typing import Optional
-from datetime import date
+from datetime import date, datetime, timezone
 
 from backend.models.attendance import Attendance
 from backend.models.student import Student
@@ -28,6 +28,7 @@ from backend.models.faculty import Faculty
 from backend.models.section import Section
 from backend.models.user import User
 from backend.models.enums import AttendanceStatus
+from backend.services.faculty_assignment_service import verify_faculty_assignment
 from backend.schemas.attendance import (
     AttendanceBulkMarkRequest,
     AttendanceBulkMarkResponse,
@@ -38,6 +39,9 @@ from backend.schemas.attendance import (
     AttendanceStudentBrief,
     AttendanceSessionSummary,
     UpdateAttendanceEntry,
+    DepartmentAttendanceSummary,
+    FacultyActivityItem,
+    AdminAttendanceAnalytics,
 )
 
 ATTENDANCE_THRESHOLD = 75.0   # Standard minimum attendance percentage
@@ -91,15 +95,18 @@ def mark_attendance_bulk(
             detail=f"Section ID {data.section_id} not found."
         )
 
-    # --- PERMISSION: Faculty must be from same department as section ---
-    # Real-world rule: A faculty from ECE cannot mark CSE attendance.
-    if faculty.department != section.department:
+    # --- PERMISSION: Faculty must have an active assignment for this section+subject ---
+    # Real-world rule: A faculty can only mark attendance for sessions they teach.
+    # This replaces the old department-match check which was too coarse-grained
+    # (e.g., it allowed ANY CSE faculty to mark ANY CSE section).
+    if not verify_faculty_assignment(db, faculty.id, data.section_id, data.subject):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"Permission denied. Faculty is from '{faculty.department.value}' "
-                f"but section belongs to '{section.department.value}'."
-            )
+                f"Permission denied. No active assignment found for faculty "
+                f"'{faculty.employee_id}' in section ID {data.section_id} "
+                f"for subject '{data.subject}'. Contact admin to create the assignment."
+            ),
         )
 
     # --- DUPLICATE CHECK: Has this exact session already been marked? ---
@@ -688,6 +695,203 @@ def get_faculty_attendance_history(
         )
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------
+# ADMIN ATTENDANCE ANALYTICS — Institution-wide overview
+# ---------------------------------------------------------------
+def get_admin_attendance_analytics(
+    db: Session,
+) -> AdminAttendanceAnalytics:
+    """
+    Builds institution-wide attendance analytics for the admin dashboard.
+
+    APPROACH — Python-level aggregation over SQL GROUP BY results:
+      1. Fetch sections → build section→department lookup (O(S) rows, S = sections)
+      2. GROUP BY section_id to get per-section totals (2 SQL queries)
+      3. GROUP BY (section, date, subject, period) DISTINCT for session counts
+      4. Run _bulk_student_analytics for all active students (1 SQL query)
+      5. Fetch faculty distinct sessions (1 SQL query)
+      6. Pivot all results in Python → build response
+
+    Total: ~6 SQL queries regardless of row count.
+    _bulk_student_analytics already handles 10,000+ students efficiently.
+    """
+    from collections import defaultdict
+
+    # ── Section → department lookup ──────────────────────────
+    sections = db.query(Section).all()
+    sect_dept_map: dict = {s.id: s.department.value for s in sections}
+
+    dept_section_count: dict = defaultdict(int)
+    for s in sections:
+        dept_section_count[s.department.value] += 1
+
+    # ── Per-section aggregates ───────────────────────────────
+    # One GROUP BY query: total records + present count + unique students per section
+    section_agg_rows = (
+        db.query(
+            Attendance.section_id,
+            func.count(Attendance.id).label("total"),
+            func.sum(
+                case(
+                    [(Attendance.status.in_(["present", "late"]), 1)],
+                    else_=0,
+                )
+            ).label("present"),
+            func.count(func.distinct(Attendance.student_id)).label("unique_students"),
+        )
+        .group_by(Attendance.section_id)
+        .all()
+    )
+
+    # Pivot section aggregates to department level
+    dept_total:   dict = defaultdict(int)
+    dept_present: dict = defaultdict(int)
+    dept_students: dict = defaultdict(int)
+
+    total_records = 0
+    overall_present = 0
+
+    for row in section_agg_rows:
+        dept = sect_dept_map.get(row.section_id, "unknown")
+        t = int(row.total or 0)
+        p = int(row.present or 0)
+        dept_total[dept]    += t
+        dept_present[dept]  += p
+        dept_students[dept] += int(row.unique_students or 0)
+        total_records    += t
+        overall_present  += p
+
+    overall_avg = round(overall_present / total_records * 100, 2) if total_records > 0 else 0.0
+
+    # ── Unique sessions per section ──────────────────────────
+    # Fetch distinct (section, date, subject, period) tuples.
+    # Result size = total unique sessions — typically thousands, not millions.
+    session_rows = (
+        db.query(
+            Attendance.section_id,
+            Attendance.attendance_date,
+            Attendance.subject,
+            Attendance.period_number,
+        )
+        .distinct()
+        .all()
+    )
+    total_sessions = len(session_rows)
+
+    dept_sessions: dict = defaultdict(int)
+    for row in session_rows:
+        dept = sect_dept_map.get(row.section_id, "unknown")
+        dept_sessions[dept] += 1
+
+    # ── Low attendance (bulk analytics for all active students) ─
+    all_students = (
+        db.query(Student)
+        .join(User, Student.user_id == User.id)
+        .options(joinedload(Student.user))
+        .filter(User.is_active == True)
+        .all()
+    )
+    analytics_map = _bulk_student_analytics(db, all_students)
+
+    low_attendance_total = sum(
+        1 for a in analytics_map.values() if a.is_low_attendance
+    )
+
+    dept_low: dict = defaultdict(int)
+    for student in all_students:
+        analytics = analytics_map.get(student.id)
+        if analytics and analytics.is_low_attendance:
+            dept = sect_dept_map.get(student.section_id or 0, "unknown")
+            dept_low[dept] += 1
+
+    # ── Department summaries ─────────────────────────────────
+    all_depts = (
+        set(dept_section_count.keys())
+        | set(dept_total.keys())
+        | set(dept_students.keys())
+    )
+    department_summaries = [
+        DepartmentAttendanceSummary(
+            department=dept.upper(),
+            total_sections=dept_section_count.get(dept, 0),
+            total_students=dept_students.get(dept, 0),
+            total_sessions=dept_sessions.get(dept, 0),
+            avg_percentage=(
+                round(dept_present.get(dept, 0) / dept_total[dept] * 100, 2)
+                if dept_total.get(dept, 0) > 0 else 0.0
+            ),
+            low_attendance_count=dept_low.get(dept, 0),
+        )
+        for dept in sorted(all_depts)
+    ]
+
+    # ── Faculty activity — top 10 by session count ───────────
+    # Fetch distinct (faculty, section, date, subject, period) — same size as session_rows
+    faculty_session_rows = (
+        db.query(
+            Attendance.faculty_id,
+            Attendance.section_id,
+            Attendance.attendance_date,
+            Attendance.subject,
+            Attendance.period_number,
+        )
+        .filter(Attendance.faculty_id.isnot(None))
+        .distinct()
+        .all()
+    )
+
+    faculty_session_count: dict = defaultdict(int)
+    for row in faculty_session_rows:
+        faculty_session_count[row.faculty_id] += 1
+
+    faculty_last_date: dict = {}
+    for row in (
+        db.query(
+            Attendance.faculty_id,
+            func.max(Attendance.attendance_date).label("last"),
+        )
+        .filter(Attendance.faculty_id.isnot(None))
+        .group_by(Attendance.faculty_id)
+        .all()
+    ):
+        faculty_last_date[row.faculty_id] = row.last
+
+    top_faculty_ids = sorted(
+        faculty_session_count.keys(),
+        key=lambda fid: -faculty_session_count[fid],
+    )[:10]
+
+    faculty_name_map: dict = {}
+    if top_faculty_ids:
+        name_rows = (
+            db.query(Faculty.id, User.full_name)
+            .join(User, Faculty.user_id == User.id)
+            .filter(Faculty.id.in_(top_faculty_ids))
+            .all()
+        )
+        faculty_name_map = {row.id: row.full_name for row in name_rows}
+
+    faculty_activity = [
+        FacultyActivityItem(
+            faculty_id=fid,
+            faculty_name=faculty_name_map.get(fid, f"Faculty #{fid}"),
+            total_sessions=faculty_session_count[fid],
+            last_marked_date=faculty_last_date.get(fid),
+        )
+        for fid in top_faculty_ids
+    ]
+
+    return AdminAttendanceAnalytics(
+        total_sessions=total_sessions,
+        total_records=total_records,
+        overall_avg_percentage=overall_avg,
+        low_attendance_total=low_attendance_total,
+        department_summaries=department_summaries,
+        faculty_activity=faculty_activity,
+        generated_at=datetime.now(timezone.utc),
+    )
 
 
 # ---------------------------------------------------------------

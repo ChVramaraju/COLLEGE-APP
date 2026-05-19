@@ -20,7 +20,7 @@
 //   Inline error with retry or back-to-session
 // ============================================================
 
-import { useCallback, type JSX, type KeyboardEvent } from 'react';
+import React, { useCallback, type JSX, type KeyboardEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, CheckCircle2, AlertTriangle, Loader2,
@@ -56,7 +56,7 @@ export default function MarkAttendancePage(): JSX.Element {
   const navigate = useNavigate();
   const engine   = useMarkAttendance();
   const {
-    sections, sectionsLoading,
+    assignments, assignmentsLoading,
     step, sessionForm, sessionErrors, setSessionField,
     studentsLoading, loadStudents,
     rows, setStatus, setRemarks, markAllPresent,
@@ -84,8 +84,8 @@ export default function MarkAttendancePage(): JSX.Element {
       {/* ── STEP 1: Session setup ─────────────────────── */}
       {(step === 'session') && (
         <SessionSetupPanel
-          sections={sections}
-          sectionsLoading={sectionsLoading}
+          assignments={assignments}
+          assignmentsLoading={assignmentsLoading}
           form={sessionForm}
           errors={sessionErrors}
           isLoading={studentsLoading}
@@ -137,11 +137,11 @@ export default function MarkAttendancePage(): JSX.Element {
 // STEP 1 — Session Setup
 // ============================================================
 function SessionSetupPanel({
-  sections, sectionsLoading, form, errors, isLoading,
+  assignments, assignmentsLoading, form, errors, isLoading,
   onFieldChange, onSubmit,
 }: {
-  sections:        import('@/types/test').SectionBrief[];
-  sectionsLoading: boolean;
+  assignments:       import('@/types/facultyAssignment').AssignedSectionBrief[];
+  assignmentsLoading: boolean;
   form:            import('@/types/attendance').SessionFormValues;
   errors:          import('@/hooks/useMarkAttendance').SessionFormErrors;
   isLoading:       boolean;
@@ -152,41 +152,51 @@ function SessionSetupPanel({
 }): JSX.Element {
   const today = new Date().toISOString().slice(0, 10);
 
+  function handleAssignmentChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const assignmentId = e.target.value;
+    if (assignmentId === '') {
+      onFieldChange('section_id', '');
+      onFieldChange('subject', '');
+      return;
+    }
+    const found = assignments.find(a => a.assignment_id === Number(assignmentId));
+    if (found) {
+      onFieldChange('section_id', found.section_id);
+      onFieldChange('subject', found.subject);
+    }
+  }
+
+  const selectedAssignmentId = assignments.find(
+    a => a.section_id === form.section_id && a.subject === form.subject,
+  )?.assignment_id ?? '';
+
   return (
     <div className={`${CARD} p-6 max-w-xl mx-auto`}>
       <h2 className="mb-6 text-base font-semibold text-gray-900">Session Details</h2>
 
       <div className="space-y-5">
-        {/* Section */}
-        <Field label="Section" required error={errors.section_id}>
+        {/* Assignment — sets both section_id + subject */}
+        <Field label="Section • Subject" required error={errors.section_id ?? errors.subject}>
           <select
-            value={form.section_id}
-            disabled={sectionsLoading || isLoading}
-            onChange={e => onFieldChange('section_id', e.target.value === '' ? '' : Number(e.target.value))}
+            value={selectedAssignmentId}
+            disabled={assignmentsLoading || isLoading}
+            onChange={handleAssignmentChange}
             className={INPUT}
           >
             <option value="">
-              {sectionsLoading ? 'Loading sections…' : '— Select a section —'}
+              {assignmentsLoading ? 'Loading assignments…' : '— Select section • subject —'}
             </option>
-            {sections.map(s => (
-              <option key={s.id} value={s.id}>
-                {s.name} · Sem {s.semester} · {s.department.toUpperCase()}
+            {assignments.map(a => (
+              <option key={a.assignment_id} value={a.assignment_id}>
+                {a.display_label}
               </option>
             ))}
           </select>
-        </Field>
-
-        {/* Subject */}
-        <Field label="Subject" required error={errors.subject}>
-          <input
-            type="text"
-            value={form.subject}
-            disabled={isLoading}
-            maxLength={100}
-            placeholder="e.g. Data Structures and Algorithms"
-            onChange={e => onFieldChange('subject', e.target.value)}
-            className={INPUT}
-          />
+          {assignments.length === 0 && !assignmentsLoading && (
+            <p className="mt-1.5 text-xs text-amber-600">
+              No assignments found. Ask admin to assign you to a section and subject.
+            </p>
+          )}
         </Field>
 
         {/* Date */}

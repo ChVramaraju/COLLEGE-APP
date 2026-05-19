@@ -39,8 +39,8 @@ import {
   getSectionStudentsForAttendance,
   markAttendanceBulk,
 } from '@/services/attendanceService';
-import { getFacultySections } from '@/services/testService';
-import type { SectionBrief } from '@/types/test';
+import { getMyFacultyAssignments } from '@/services/facultyAssignmentService';
+import type { AssignedSectionBrief } from '@/types/facultyAssignment';
 
 
 // ============================================================
@@ -57,9 +57,9 @@ export interface SessionFormErrors {
 }
 
 export interface UseMarkAttendanceReturn {
-  // ── Section list (for the selector) ─────────────────────
-  sections:         SectionBrief[];
-  sectionsLoading:  boolean;
+  // ── Assignment list (section + subject, for the dropdown) ─
+  assignments:       AssignedSectionBrief[];
+  assignmentsLoading: boolean;
 
   // ── Step 1: Session form ─────────────────────────────────
   step:         MarkStep;
@@ -118,16 +118,16 @@ function validateSessionForm(form: SessionFormValues): SessionFormErrors {
 // ============================================================
 
 export function useMarkAttendance(): UseMarkAttendanceReturn {
-  // ── Sections list ────────────────────────────────────────
-  const [sections,        setSections]        = useState<SectionBrief[]>([]);
-  const [sectionsLoading, setSectionsLoading] = useState(true);
+  // ── Assignment list (section + subject combined) ─────────
+  const [assignments,       setAssignments]       = useState<AssignedSectionBrief[]>([]);
+  const [assignmentsLoading, setAssignmentsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    getFacultySections()
-      .then(data => { if (!cancelled) setSections(data); })
+    getMyFacultyAssignments()
+      .then(data => { if (!cancelled) setAssignments(data); })
       .catch(() => { /* silent — user will see empty dropdown */ })
-      .finally(() => { if (!cancelled) setSectionsLoading(false); });
+      .finally(() => { if (!cancelled) setAssignmentsLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
@@ -250,8 +250,8 @@ export function useMarkAttendance(): UseMarkAttendanceReturn {
   }, []);
 
   return {
-    sections,
-    sectionsLoading,
+    assignments,
+    assignmentsLoading,
     step,
     sessionForm,
     sessionErrors,

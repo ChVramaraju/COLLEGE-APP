@@ -95,6 +95,7 @@ from backend.models import semester_result    # semester_results table
 from backend.models import grade_scale        # grade_scale table
 from backend.models import job_posting        # job_postings table
 from backend.models import placement_application  # placement_applications table
+from backend.models import faculty_assignment # faculty_section_assignments table
 
 # ---------------------------------------------------------------
 # TARGET METADATA

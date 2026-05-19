@@ -140,5 +140,13 @@ class Faculty(Base):
     # Navigate from Faculty -> all results they entered (One-to-Many)
     entered_results = relationship("Result", back_populates="faculty")
 
+    # Navigate from Faculty -> all teaching assignments (One-to-Many)
+    # This is the source of truth for which sections+subjects this faculty teaches.
+    section_assignments = relationship(
+        "FacultySectionAssignment",
+        back_populates="faculty",
+        cascade="all, delete-orphan",
+    )
+
     def __repr__(self):
         return f"<Faculty id={self.id} emp={self.employee_id} dept={self.department}>"

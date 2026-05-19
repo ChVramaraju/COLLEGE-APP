@@ -23,7 +23,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 from pydantic import ConfigDict
 from typing import Optional, List
-from datetime import date
+from datetime import date, datetime
 
 from backend.models.enums import AttendanceStatus
 
@@ -245,3 +245,53 @@ class UpdateAttendanceEntry(BaseModel):
     """
     status: AttendanceStatus
     remarks: Optional[str] = Field(None, max_length=200)
+
+
+# ---------------------------------------------------------------
+# DEPARTMENT ATTENDANCE SUMMARY — Per-department rollup
+# ---------------------------------------------------------------
+class DepartmentAttendanceSummary(BaseModel):
+    """
+    One department's attendance snapshot.
+    Returned inside AdminAttendanceAnalytics.
+
+    avg_percentage = (present + late) / total * 100 for the whole dept.
+    low_attendance_count = students whose personal % is below 75.
+    """
+    department: str
+    total_sections: int
+    total_students: int
+    total_sessions: int
+    avg_percentage: float
+    low_attendance_count: int
+
+
+# ---------------------------------------------------------------
+# FACULTY ACTIVITY ITEM — Sessions marked by one faculty
+# ---------------------------------------------------------------
+class FacultyActivityItem(BaseModel):
+    """
+    One row in the faculty marking activity table.
+    total_sessions counts unique (section, date, subject, period) tuples.
+    """
+    faculty_id: int
+    faculty_name: str
+    total_sessions: int
+    last_marked_date: Optional[date] = None
+
+
+# ---------------------------------------------------------------
+# ADMIN ATTENDANCE ANALYTICS — Institution-wide overview
+# ---------------------------------------------------------------
+class AdminAttendanceAnalytics(BaseModel):
+    """
+    Returned by GET /attendance/admin/analytics (admin only).
+    Aggregates across all sections, departments, and faculty.
+    """
+    total_sessions: int
+    total_records: int
+    overall_avg_percentage: float
+    low_attendance_total: int
+    department_summaries: List[DepartmentAttendanceSummary]
+    faculty_activity: List[FacultyActivityItem]
+    generated_at: datetime

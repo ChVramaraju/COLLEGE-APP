@@ -37,7 +37,8 @@ import StudentDashboardPage  from '@/pages/student/DashboardPage';
 import FacultyDashboardPage  from '@/pages/faculty/DashboardPage';
 import AdminDashboardPage    from '@/pages/admin/DashboardPage';
 import NotFoundPage          from '@/pages/common/NotFoundPage';
-import StudentAttendancePage from '@/pages/student/StudentAttendancePage';
+import StudentAttendancePage  from '@/pages/student/StudentAttendancePage';
+import StudentResultsPage    from '@/pages/student/StudentResultsPage';
 import NotesPage             from '@/pages/student/NotesPage';
 import TestsPage             from '@/pages/student/TestsPage';
 import TestExamPage          from '@/pages/student/TestExamPage';
@@ -52,6 +53,9 @@ import FacultyAttendancePage       from '@/pages/faculty/FacultyAttendancePage';
 import MarkAttendancePage          from '@/pages/faculty/MarkAttendancePage';
 import AttendanceHistoryPage       from '@/pages/faculty/AttendanceHistoryPage';
 import EditAttendanceSessionPage   from '@/pages/faculty/EditAttendanceSessionPage';
+import FacultySectionsPage        from '@/pages/faculty/SectionsPage';
+import FacultyResultsPage         from '@/pages/faculty/ResultsPage';
+import FacultyAssignmentsPage     from '@/pages/admin/FacultyAssignmentsPage';
 import PlacementsPage           from '@/pages/student/PlacementsPage';
 import JobDetailPage            from '@/pages/student/JobDetailPage';
 import MyApplicationsPage      from '@/pages/student/MyApplicationsPage';
@@ -63,6 +67,7 @@ import AdminDepartmentsPage    from '@/pages/admin/DepartmentsPage';
 import AdminSectionsPage       from '@/pages/admin/SectionsPage';
 import AdminSystemHealthPage   from '@/pages/admin/SystemHealthPage';
 import AdminAnnouncementsPage  from '@/pages/admin/AnnouncementsPage';
+import AdminAttendancePage     from '@/pages/admin/AttendancePage';
 import { AdminErrorBoundary }  from '@/components/admin/AdminErrorBoundary';
 
 const router = createBrowserRouter([
@@ -96,7 +101,7 @@ const router = createBrowserRouter([
           { path: 'tests',                    element: <TestsPage /> },
           { path: 'tests/:testId/exam',    element: <TestExamPage /> },
           { path: 'tests/:testId/result',  element: <TestResultPage /> },
-          // { path: 'results',    element: <StudentResultsPage /> },
+          { path: 'results',    element: <StudentResultsPage /> },
           { path: 'placement',                       element: <PlacementsPage /> },
           { path: 'placement/applications',          element: <MyApplicationsPage /> },
           { path: 'placement/:jobId',                element: <JobDetailPage /> },
@@ -126,8 +131,8 @@ const router = createBrowserRouter([
           { path: 'attendance/mark',          element: <MarkAttendancePage /> },
           { path: 'attendance/history',       element: <AttendanceHistoryPage /> },
           { path: 'attendance/edit',          element: <EditAttendanceSessionPage /> },
-          // { path: 'sections',   element: <FacultySectionsPage /> },
-          // { path: 'results',    element: <FacultyResultsPage /> },
+          { path: 'sections',   element: <FacultySectionsPage /> },
+          { path: 'results',    element: <FacultyResultsPage /> },
         ],
       },
     ],
@@ -155,6 +160,8 @@ const router = createBrowserRouter([
           { path: 'sections',      element: <AdminErrorBoundary><AdminSectionsPage /></AdminErrorBoundary> },
           { path: 'system-health', element: <AdminErrorBoundary><AdminSystemHealthPage /></AdminErrorBoundary> },
           { path: 'announcements', element: <AdminErrorBoundary><AdminAnnouncementsPage /></AdminErrorBoundary> },
+          { path: 'attendance',    element: <AdminErrorBoundary><AdminAttendancePage /></AdminErrorBoundary> },
+          { path: 'faculty-assignments', element: <AdminErrorBoundary><FacultyAssignmentsPage /></AdminErrorBoundary> },
         ],
       },
     ],
