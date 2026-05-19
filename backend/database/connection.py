@@ -22,14 +22,28 @@ from backend.config.settings import settings
 # 1. THE ENGINE — Connection Pool Manager
 # ---------------------------------------------------------------
 # The engine is your app's "connection factory."
-# It reads the DATABASE_URL from settings (which reads from .env)
-# and manages a pool of reusable connections to PostgreSQL.
+# It reads the DATABASE_URL from settings (which reads Railway's
+# environment variables first, then falls back to .env).
 #
-# connect_args is empty for PostgreSQL (it's needed only for SQLite).
-# In production you can tune pool_size and max_overflow here.
+# SSL HANDLING:
+#   Railway and Render managed PostgreSQL require TLS/SSL for all
+#   external connections. Local development PostgreSQL instances
+#   (localhost/127.0.0.1) do NOT have SSL configured by default.
+#   We detect local vs. cloud and set sslmode accordingly.
+#
+#   WHY connect_args instead of URL parameter?
+#     Adding ?sslmode=require to the URL works too, but
+#     connect_args keeps the URL clean and avoids double-setting
+#     if the URL already contains an sslmode query parameter.
 # ---------------------------------------------------------------
+
+# Cloud PostgreSQL requires SSL; skip it for local development.
+_connect_args: dict = {} if settings.is_local else {"sslmode": "require"}
+
 engine = create_engine(
     settings.DATABASE_URL,
+    connect_args=_connect_args,
+
     # pool_size: connections kept alive in the pool at all times.
     # 5 is the SQLAlchemy default and appropriate for a single-dyno app.
     # Raise to 10-20 for multi-worker Gunicorn deployments.

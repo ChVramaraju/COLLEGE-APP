@@ -6,77 +6,141 @@
 # This is a non-negotiable production rule:
 #   → Never put passwords or secret keys directly in code.
 #   → .env files are added to .gitignore so they never reach GitHub.
+#
+# PRIORITY ORDER (highest → lowest):
+#   1. Real system environment variables  ← Railway / Render set these
+#   2. .env file values                   ← local development only
+#   3. Field default values               ← safe non-secret defaults only
+#
+# WHY no manual load_dotenv() call?
+#   pydantic-settings handles .env loading internally and ALWAYS lets
+#   real system env vars win over .env file values. A manual
+#   load_dotenv(override=True) would do the opposite — it would
+#   overwrite Railway's DATABASE_URL with the local .env value,
+#   causing the "connection refused on localhost" crash in production.
 # =============================================================
 
 import os
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from dotenv import load_dotenv
 
-# Build absolute path to .env so it's found no matter where the app is launched from
+# Absolute path to .env — resolved at import time so it's found
+# regardless of the working directory the server is launched from.
 _env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
-
-# override=True ensures .env values always win over any stale system env vars
-load_dotenv(_env_path, override=True)
 
 
 class Settings(BaseSettings):
-    # Pydantic v2 style — replaces the old inner `class Config`
+    # ----------------------------------------------------------------
+    # pydantic-settings v2 config
+    # ----------------------------------------------------------------
+    # env_file          → read local .env for development convenience
+    # env_ignore_empty  → treat empty strings the same as missing vars
+    # extra="allow"     → don't crash on unknown env vars (Railway injects many)
+    #
+    # CRITICAL: pydantic-settings gives real os.environ vars priority
+    # over .env file values by default — no override flag needed.
+    # ----------------------------------------------------------------
     model_config = SettingsConfigDict(
         env_file=_env_path,
         env_file_encoding="utf-8",
+        env_ignore_empty=True,
         extra="allow",
     )
 
-    # --- Database ---
-    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/smart_college_db"
+    # ----------------------------------------------------------------
+    # DATABASE
+    # ----------------------------------------------------------------
+    # NO default value — the app refuses to start if DATABASE_URL is
+    # absent. A missing connection string is a deployment error, not a
+    # recoverable runtime state. Failing fast here prevents a confusing
+    # "connection refused on localhost" error deep inside a route handler.
+    #
+    # Railway: set DATABASE_URL in your service's Variables tab.
+    #          Use the "postgres.DATABASE_URL" reference variable so
+    #          Railway automatically rotates it when credentials change.
+    # Local:   set DATABASE_URL in backend/.env (gitignored).
+    # ----------------------------------------------------------------
+    DATABASE_URL: str
 
-    # --- JWT Authentication ---
-    # No default — if SECRET_KEY is missing from .env the app refuses to start.
-    # A weak or missing secret key means any token can be forged.
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_database_url(cls, v: str) -> str:
+        """
+        Normalise the connection URL so SQLAlchemy always receives a
+        valid dialect string.
+
+        WHY: Railway (and legacy Heroku) issue URLs that start with
+        "postgres://" — the short form that psycopg2 accepts but
+        SQLAlchemy 2.x's engine factory rejects with:
+            "Could not parse rfc1738 URL from string 'postgres://...'"
+        Replacing the prefix with "postgresql://" fixes this silently.
+        """
+        if isinstance(v, str) and v.startswith("postgres://"):
+            v = "postgresql://" + v[len("postgres://"):]
+        return v
+
+    # ----------------------------------------------------------------
+    # JWT AUTHENTICATION
+    # ----------------------------------------------------------------
+    # Secret used to sign every JWT token.
+    # Override this in Railway Variables / local .env — never commit a
+    # real secret here.  The placeholder below is intentionally weak so
+    # a deployment that forgot to set SECRET_KEY is obviously broken.
+    # ----------------------------------------------------------------
     SECRET_KEY: str = "change-this-to-a-long-random-secret-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
 
-    # --- CORS ---
+    # ----------------------------------------------------------------
+    # CORS
+    # ----------------------------------------------------------------
     # Comma-separated list of allowed frontend origins.
     #
     # WHY NOT "*"?
-    #   The browser CORS spec forbids wildcard origins when the request is
-    #   credentialed (carries an Authorization header or cookie).
-    #   FastAPI sends back "Access-Control-Allow-Origin: *" which the browser
-    #   REJECTS for credentialed requests — your JWT never reaches the API.
+    #   The browser CORS spec forbids wildcard origins for credentialed
+    #   requests (ones that carry Authorization headers).  FastAPI's
+    #   CORSMiddleware returns "Access-Control-Allow-Origin: *" which
+    #   the browser immediately REJECTS — your JWT never reaches the API.
     #
-    # Development defaults: CRA (3000) + Vite (5173)
-    # Production: set ALLOWED_ORIGINS in Railway/Render env vars to your domain.
-    #
-    # Example .env value:
-    #   ALLOWED_ORIGINS=http://localhost:3000,https://myapp.netlify.app
+    # Development defaults: Vite (5173) + CRA (3000)
+    # Production: override ALLOWED_ORIGINS in Railway Variables.
+    #   Example: https://myapp.netlify.app,https://myapp.vercel.app
+    # ----------------------------------------------------------------
     ALLOWED_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
-    # --- Rate Limiting ---
-    # Login attempts allowed per minute per IP address.
-    # Campus systems sit behind NAT: one IP can represent 50+ students.
-    # 20/minute = 1200 attempts/hour — still impractical to brute-force
-    # a password with uppercase + numbers, but allows normal usage.
-    # Override in production .env: LOGIN_RATE_LIMIT=10/minute
+    # ----------------------------------------------------------------
+    # RATE LIMITING
+    # ----------------------------------------------------------------
+    # Login attempts per minute per IP address.
+    # Campus systems sit behind NAT — one IP can represent 50+ students.
+    # Override in Railway Variables: LOGIN_RATE_LIMIT=10/minute
+    # ----------------------------------------------------------------
     LOGIN_RATE_LIMIT: str = "20/minute"
 
-    # --- App Info ---
+    # ----------------------------------------------------------------
+    # APP INFO
+    # ----------------------------------------------------------------
     APP_NAME: str = "Smart College Ecosystem"
-    # Default False — never expose debug info in production.
-    # Override to True in your local .env only.
-    DEBUG: bool = False
+    DEBUG: bool = False  # Never True in production
 
+    # ----------------------------------------------------------------
+    # COMPUTED PROPERTIES
+    # ----------------------------------------------------------------
     @property
     def allowed_origins_list(self) -> list[str]:
         """
-        Parses ALLOWED_ORIGINS into a list FastAPI CORSMiddleware can consume.
-        Strips whitespace so "http://a.com, http://b.com" works correctly.
+        Parses ALLOWED_ORIGINS into a list CORSMiddleware can consume.
+        Strips whitespace so "http://a.com, http://b.com" works.
         """
-        return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
+        return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
+
+    @property
+    def is_local(self) -> bool:
+        """True when the database host is localhost — used to skip SSL."""
+        url = self.DATABASE_URL
+        return "localhost" in url or "127.0.0.1" in url
 
 
-# Single instance used throughout the entire app.
-# Import this wherever you need settings, e.g.:
-#   from config.settings import settings
+# Single global instance — import this everywhere:
+#   from backend.config.settings import settings
 settings = Settings()
