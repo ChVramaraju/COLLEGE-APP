@@ -10,6 +10,7 @@
 import asyncio
 import logging
 import logging.config
+import urllib.parse
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,9 +105,36 @@ from backend.services.websocket_manager import ws_manager
 #   Code after `yield` runs ONCE on graceful shutdown (cleanup).
 #   FastAPI guarantees this runs in the correct lifecycle order.
 # ---------------------------------------------------------------
+_startup_logger = logging.getLogger("startup")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- STARTUP ---
+
+    # ----------------------------------------------------------------
+    # DB CONFIGURATION DIAGNOSTICS
+    # Printed on every startup so Railway logs can confirm the correct
+    # host is being used.  Passwords are NEVER printed.
+    # Remove this block once Railway connectivity is verified stable.
+    # ----------------------------------------------------------------
+    _db_url = settings.DATABASE_URL
+    _parsed = urllib.parse.urlparse(_db_url)
+    _startup_logger.info("=" * 50)
+    _startup_logger.info("DB CONFIG DIAGNOSTICS")
+    _startup_logger.info("  Dialect  : %s", _parsed.scheme or "MISSING")
+    _startup_logger.info("  Host     : %s", _parsed.hostname or "MISSING")
+    _startup_logger.info("  Port     : %s", _parsed.port or "MISSING")
+    _startup_logger.info("  Database : %s", (_parsed.path or "").lstrip("/") or "MISSING")
+    _startup_logger.info("  Is local : %s", settings.is_local)
+    _startup_logger.info("  SSL mode : %s", "disabled (local)" if settings.is_local else "sslmode=require")
+    if settings.is_local:
+        _startup_logger.warning("  *** USING LOCALHOST — will fail on Railway if DATABASE_URL is wrong ***")
+    else:
+        _startup_logger.info("  *** USING REMOTE HOST — Railway Postgres expected ***")
+    _startup_logger.info("=" * 50)
+    # ----------------------------------------------------------------
+
     # Register the running event loop so ws_manager.push_sync() can
     # schedule async WebSocket sends from synchronous service code.
     ws_manager.set_loop(asyncio.get_event_loop())
