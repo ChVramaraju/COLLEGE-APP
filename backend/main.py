@@ -268,6 +268,7 @@ app.add_middleware(
 # Used by deployment platforms (Railway/Render) to verify health.
 # ---------------------------------------------------------------
 @app.get("/", tags=["Health"])
+@app.get("/health", tags=["Health"])
 def health_check():
     return {
         "status": "online",
