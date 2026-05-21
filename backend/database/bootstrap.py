@@ -109,8 +109,12 @@ def main():
     logger.info("-" * 60)
 
     # DECISION: Fresh DB vs Existing DB
-    if not existing_tables:
-        # FRESH DATABASE
+    # Treat DB as "fresh" if no application tables exist.
+    # alembic_version alone means a previous deploy stamped Alembic
+    # but never created the actual schema — use create_all().
+    app_tables = existing_tables - {"alembic_version"}
+    if not app_tables:
+        # FRESH DATABASE (or only alembic_version exists)
         logger.info("PATH: Fresh database → creating all tables via Base.metadata.create_all()")
         try:
             Base.metadata.create_all(bind=engine)
@@ -143,7 +147,7 @@ def main():
             logger.warning("⚠ Failed to stamp alembic: %s (non-critical)", e)
 
     else:
-        # EXISTING DATABASE
+        # EXISTING DATABASE (application tables are present)
         logger.info("PATH: Existing database → running alembic upgrade head")
         try:
             alembic_cfg = Config("alembic.ini")
